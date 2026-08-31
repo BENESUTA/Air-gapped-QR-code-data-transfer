@@ -130,6 +130,18 @@
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 12px 0;
   }
 
+  .loop-banner {
+    background: var(--amber-dim); border: 1px solid var(--amber); border-radius: 8px;
+    padding: 12px 14px; margin: 10px 0; font-size: 13px; line-height: 1.7; color: #fff2df;
+  }
+
+  .request-panel {
+    background: var(--panel-raised); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; margin: 12px 0;
+  }
+  .request-panel h2 { font-size: 13.5px; color: var(--text); margin: 0 0 10px; }
+  .page-nav { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 8px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+
   /* --- チャンク受信状況(LED アレイ風) --- */
   #recv-progress-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(14px, 1fr));
@@ -169,6 +181,25 @@
     font-size: 13px; color: var(--muted); line-height: 1.9; padding-top: 8px;
   }
   details.howto ol { margin: 0; padding-left: 20px; }
+
+  details.cam-settings { margin: 10px 0 4px; }
+  details.cam-settings summary {
+    cursor: pointer; font-size: 13px; color: var(--muted); padding: 4px 0;
+    display: flex; align-items: center; gap: 6px;
+  }
+  details.cam-settings .cam-settings-body {
+    padding-top: 10px; background: var(--panel-raised); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px; margin-top: 6px;
+  }
+  .mode-row { display: flex; gap: 18px; margin-bottom: 4px; }
+  .radio-label {
+    display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); cursor: pointer;
+  }
+  .radio-label input[type="radio"] { width: 15px; height: 15px; accent-color: var(--amber); margin: 0; }
+  .cam-manual-fields { display: flex; gap: 10px; margin-top: 10px; }
+  .cam-manual-fields .field { flex: 1; margin-bottom: 0; }
+  .cam-manual-fields label { font-size: 12px; }
+  .cam-hint { font-size: 11.5px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
 
   footer.app-footer {
     text-align: center; color: var(--muted); font-size: 11.5px; margin-top: 22px; line-height: 1.8;
@@ -273,6 +304,70 @@
       </div>
     </div>
 
+    <div class="panel" id="send-resend-panel" style="display:none;">
+      <h2>3. 欠損チャンクの再送信(任意)</h2>
+      <p style="font-size:13px; color:var(--muted); line-height:1.7; margin:0 0 12px;">
+        受信側が1周スキャンしても届かなかったチャンクがある場合、受信側の画面に表示される「要求QRコード」を
+        ここで読み取ると、欠損しているチャンクだけを自動的に選んでループ再生します。全体を最初から流し直す必要はありません。
+      </p>
+
+      <details class="cam-settings">
+        <summary>⚙ カメラ設定(解析画質・フレームレート)</summary>
+        <div class="cam-settings-body">
+          <div class="mode-row">
+            <label class="radio-label">
+              <input type="radio" name="send-cam-mode" id="send-cam-mode-auto" checked> 自動設定(推奨)
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="send-cam-mode" id="send-cam-mode-manual"> 手動設定
+            </label>
+          </div>
+          <div class="cam-manual-fields" id="send-cam-manual-fields" style="display:none;">
+            <div class="field">
+              <label for="send-cam-resolution">解析画質</label>
+              <select id="send-cam-resolution">
+                <option value="low">低(480p相当・高速)</option>
+                <option value="medium">標準(720p相当)</option>
+                <option value="high">高精細(1080p相当)</option>
+                <option value="ultra">最高精細(1440p相当・低速)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="send-cam-fps">フレームレート</label>
+              <select id="send-cam-fps">
+                <option value="10">10 fps</option>
+                <option value="15">15 fps</option>
+                <option value="20">20 fps</option>
+                <option value="24">24 fps</option>
+                <option value="30">30 fps</option>
+                <option value="60">60 fps</option>
+              </select>
+            </div>
+          </div>
+          <div class="cam-hint">
+            この設定は受信側・送信側のどちらのカメラにも共通で適用されます(受信タブの設定と連動します)。
+          </div>
+        </div>
+      </details>
+
+      <div class="camera-wrap" style="max-width:260px;">
+        <video id="send-scan-video" playsinline muted></video>
+        <canvas id="send-scan-overlay"></canvas>
+      </div>
+
+      <div class="btn-row" style="justify-content:center; margin: 10px 0 6px;">
+        <button class="btn btn-primary" id="send-scan-btn" disabled>受信側の要求QRを読み取る</button>
+        <button class="btn" id="send-scan-stop-btn" disabled>読み取りを停止</button>
+      </div>
+      <div id="send-scan-status" style="font-size:13px; color:var(--muted); text-align:center;">
+        まだ要求QRは読み取っていません。
+      </div>
+
+      <div class="btn-row" style="justify-content:center; margin-top:12px;">
+        <button class="btn" id="send-revert-btn" style="display:none;">全フレームの再生に戻す</button>
+      </div>
+    </div>
+
     <details class="howto">
       <summary>使い方(送信側)</summary>
       <div class="howto-body">
@@ -281,6 +376,7 @@
           <li>「QRコード列を作成」を押すと、ファイルがチャンクに分割され、先頭に「メタ情報フレーム」が追加されたQRコード列が生成されます。</li>
           <li>受信側の端末で受信タブを開いてカメラを起動してもらい、この画面のQRコードを映します。</li>
           <li>再生を開始すると、QRコードが自動的に切り替わっていきます。受信側がすべて読み取り終えるまでループ再生を続けてください。</li>
+          <li>受信側が1周しても欠損チャンクがある場合は、受信側の画面に「要求QRコード」が表示されます。それをこの画面下部のカメラで読み取ると、欠損分だけを再送信できます。</li>
         </ol>
       </div>
     </details>
@@ -302,9 +398,79 @@
         <button class="btn" id="recv-stop-btn" disabled>カメラを停止</button>
         <button class="btn" id="recv-reset-btn">リセット</button>
       </div>
+
+      <details class="cam-settings">
+        <summary>⚙ カメラ設定(解析画質・フレームレート)</summary>
+        <div class="cam-settings-body">
+          <div class="mode-row">
+            <label class="radio-label">
+              <input type="radio" name="recv-cam-mode" id="recv-cam-mode-auto" checked> 自動設定(推奨)
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="recv-cam-mode" id="recv-cam-mode-manual"> 手動設定
+            </label>
+          </div>
+          <div class="cam-manual-fields" id="recv-cam-manual-fields" style="display:none;">
+            <div class="field">
+              <label for="recv-cam-resolution">解析画質</label>
+              <select id="recv-cam-resolution">
+                <option value="low">低(480p相当・高速)</option>
+                <option value="medium">標準(720p相当)</option>
+                <option value="high">高精細(1080p相当)</option>
+                <option value="ultra">最高精細(1440p相当・低速)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="recv-cam-fps">フレームレート</label>
+              <select id="recv-cam-fps">
+                <option value="10">10 fps</option>
+                <option value="15">15 fps</option>
+                <option value="20">20 fps</option>
+                <option value="24">24 fps</option>
+                <option value="30">30 fps</option>
+                <option value="60">60 fps</option>
+              </select>
+            </div>
+          </div>
+          <div class="cam-hint">
+            画質を上げるほど遠くのQRコードや高精細なQRコードを読み取りやすくなりますが、1フレームあたりの解析に時間がかかり速度が落ちます。
+            設定はカメラの次回起動時、または起動中であれば即座に再適用されます(送信側・受信側どちらのカメラにも共通で適用されます)。
+          </div>
+        </div>
+      </details>
+
       <div id="recv-status">カメラを起動して、送信側のQRコードを映してください。</div>
 
+      <div id="recv-loop-banner" class="loop-banner" style="display:none;">
+        <span id="recv-loop-text"></span>
+        <div class="btn-row" style="margin-top:8px;">
+          <button class="btn btn-primary" id="recv-loop-request-btn">要求QRを表示</button>
+          <button class="btn" id="recv-loop-dismiss-btn">閉じる</button>
+        </div>
+      </div>
+
       <div id="recv-meta" style="display:none;"></div>
+
+      <div class="btn-row" style="justify-content:center; margin: 4px 0 10px;">
+        <button class="btn btn-primary" id="recv-request-btn" disabled>欠損チャンクをQRで送信側に見せる</button>
+      </div>
+
+      <div id="recv-request-panel" class="request-panel" style="display:none;">
+        <h2>要求QRコードを送信側のカメラに映してください</h2>
+        <div class="viewfinder" style="max-width:260px;">
+          <canvas id="recv-request-canvas" width="600" height="600"></canvas>
+          <div class="vf-corner tl"></div><div class="vf-corner tr"></div>
+          <div class="vf-corner bl"></div><div class="vf-corner br"></div>
+        </div>
+        <div class="page-nav" id="recv-request-page-row" style="display:none;">
+          <button class="btn btn-icon" id="recv-request-prev-btn">◀</button>
+          <span id="recv-request-page-label">1 / 1</span>
+          <button class="btn btn-icon" id="recv-request-next-btn">▶</button>
+        </div>
+        <div class="btn-row" style="justify-content:center; margin-top:10px;">
+          <button class="btn" id="recv-request-back-btn">スキャンへ戻る</button>
+        </div>
+      </div>
 
       <div id="recv-progress-grid"></div>
       <div id="recv-missing"></div>
@@ -319,6 +485,8 @@
           <li>「カメラを起動」を押し、カメラへのアクセスを許可します(HTTPS、またはlocalhost/ローカルファイルとして開いている必要があります)。</li>
           <li>送信側の画面に表示されているQRコードを画面に収めます。まず「メタ情報フレーム」が読み取られ、ファイル名やサイズが表示されます。</li>
           <li>そのままQRコードの切り替わりを映し続けると、チャンクが1つずつ受信されます(受信済みは緑色の四角で表示されます)。</li>
+          <li>送信側が1周すると自動でお知らせが表示されます。欠損チャンクが残っていれば「要求QRを表示」を押すと、この画面に要求QRコードが表示されるので、それを送信側のカメラに映してもらってください。送信側は欠損分だけを自動で再送信します。</li>
+          <li>再送信が終わったら「スキャンへ戻る」でカメラに戻り、続きを受信してください。</li>
           <li>全チャンク受信後、自動でSHA-256ハッシュを検証し、成功すればダウンロードボタンとプレビューが表示されます。</li>
         </ol>
       </div>
@@ -12741,13 +12909,13 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
 });
 </script>
 <script>
-/* ===== QR Transfer Protocol - フレーム構造(メタ/データ)の組み立て・解析、SHA-256検証ユーティリティ ===== */
+/* ===== QR Transfer Protocol - フレーム構造(メタ/データ/欠損要求)の組み立て・解析、SHA-256検証ユーティリティ ===== */
 /*
  * QR Transfer - Protocol layer
  * Frame format (all multi-byte integers are big-endian):
  *
  *   Common header:
- *     byte 0      : (protocolVersion << 4) | frameType   (frameType: 0=META, 1=DATA)
+ *     byte 0      : (protocolVersion << 4) | frameType   (frameType: 0=META, 1=DATA, 2=MISSING)
  *     bytes 1-2   : sessionId (uint16)
  *
  *   META frame (frameType=0), continues after common header:
@@ -12764,6 +12932,15 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
  *     bytes 3-4   : chunkIndex (uint16, 0-based)
  *     bytes 5...  : payload bytes (raw file bytes for this chunk)
  *
+ *   MISSING frame (frameType=2) - sent by the RECEIVER, scanned by the SENDER,
+ *   to request retransmission of only the chunks that failed to scan.
+ *   continues after common header:
+ *     byte  3     : requestSeq  (uint8) - bumped each time the receiver rebuilds a request
+ *     byte  4     : pageIndex   (uint8, 0-based) - large missing-lists may span multiple QR frames
+ *     byte  5     : pageCount   (uint8)
+ *     bytes 6-7   : missingCount (uint16) - number of indices in THIS page
+ *     bytes 8...  : missing chunk indices for this page, uint16 each
+ *
  * Every frame is encoded into a single QR code using explicit 8-bit Byte mode
  * (qrcode-generator's addData(str, 'Byte')), where each JS string character
  * code 0-255 represents exactly one raw byte (qrcode-generator's default
@@ -12775,6 +12952,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
   var PROTO_VERSION = 1;
   var FRAME_META = 0;
   var FRAME_DATA = 1;
+  var FRAME_MISSING = 2;
 
   var textEncoder = new TextEncoder();
   var textDecoder = new TextDecoder('utf-8');
@@ -12825,6 +13003,32 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
 
   function dataFrameOverhead() { return 5; } // 1 (verType) + 2 (sessionId) + 2 (chunkIndex)
 
+  function missingFrameOverhead() { return 8; } // 1 + 2 + 1(requestSeq) + 1(pageIndex) + 1(pageCount) + 2(missingCount)
+
+  function buildMissingFramePage(sessionId, requestSeq, pageIndex, pageCount, indices) {
+    var head = [(PROTO_VERSION << 4) | FRAME_MISSING]
+      .concat(u16be(sessionId))
+      .concat([requestSeq & 0xff, pageIndex & 0xff, pageCount & 0xff])
+      .concat(u16be(indices.length));
+    var idxBytes = [];
+    for (var i = 0; i < indices.length; i++) idxBytes = idxBytes.concat(u16be(indices[i]));
+    return concatArrays([new Uint8Array(head), new Uint8Array(idxBytes)]);
+  }
+
+  // 欠損チャンク番号のリストを、1フレームあたり maxBytes に収まるようページ分割して
+  // MISSING フレーム群を組み立てる。
+  function buildMissingFramePages(sessionId, requestSeq, indices, maxBytes) {
+    var overhead = missingFrameOverhead();
+    var perPage = Math.max(1, Math.floor((maxBytes - overhead) / 2));
+    var pageCount = Math.max(1, Math.ceil(indices.length / perPage));
+    var pages = [];
+    for (var p = 0; p < pageCount; p++) {
+      var slice = indices.slice(p * perPage, (p + 1) * perPage);
+      pages.push(buildMissingFramePage(sessionId, requestSeq, p, pageCount, slice));
+    }
+    return pages;
+  }
+
   function metaFrameOverhead(filenameByteLen, mimeByteLen) {
     // 1 + 2 + 2 + 2 + 4 + 32 + 1 + 1 = 45, plus variable filename/mime bytes
     return 45 + filenameByteLen + mimeByteLen;
@@ -12869,6 +13073,24 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       var chunkIndex = readU16(bytes, 3);
       var payload = bytes.slice(5);
       return { type: 'data', sessionId: sessionId, chunkIndex: chunkIndex, payload: payload };
+    } else if (type === FRAME_MISSING) {
+      if (bytes.length < 8) return null;
+      var requestSeq = bytes[3];
+      var pageIndex = bytes[4];
+      var pageCount = bytes[5];
+      var missingCount = readU16(bytes, 6);
+      var o2 = 8;
+      if (bytes.length < o2 + missingCount * 2) return null;
+      var missingIndices = [];
+      for (var k = 0; k < missingCount; k++) { missingIndices.push(readU16(bytes, o2)); o2 += 2; }
+      return {
+        type: 'missing',
+        sessionId: sessionId,
+        requestSeq: requestSeq,
+        pageIndex: pageIndex,
+        pageCount: pageCount,
+        missingIndices: missingIndices
+      };
     }
     return null;
   }
@@ -12931,10 +13153,14 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     PROTO_VERSION: PROTO_VERSION,
     FRAME_META: FRAME_META,
     FRAME_DATA: FRAME_DATA,
+    FRAME_MISSING: FRAME_MISSING,
     buildMetaFrame: buildMetaFrame,
     buildDataFrame: buildDataFrame,
     dataFrameOverhead: dataFrameOverhead,
     metaFrameOverhead: metaFrameOverhead,
+    missingFrameOverhead: missingFrameOverhead,
+    buildMissingFramePage: buildMissingFramePage,
+    buildMissingFramePages: buildMissingFramePages,
     parseFrame: parseFrame,
     probeMaxBytes: probeMaxBytes,
     bytesToBinaryString: bytesToBinaryString,
@@ -12990,6 +13216,25 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     return e;
   }
 
+  // カメラの新フレーム到着に同期してコールバックを呼ぶスケジューラ。
+  // video.requestVideoFrameCallback (Chrome/Edge/Safari) が使える環境ではそれを使い、
+  // 実際にデコードされた新しい映像フレームが届いた時だけ処理を行うことで、
+  // 画面のリフレッシュレート(requestAnimationFrame)に同期させるより無駄な二重処理を減らし、
+  // QRコードの読み取りをより高速・低遅延にする。非対応ブラウザでは requestAnimationFrame にフォールバックする。
+  function createFrameScheduler(videoEl) {
+    var useVFC = typeof videoEl.requestVideoFrameCallback === 'function';
+    return {
+      useVFC: useVFC,
+      request: function (cb) {
+        return useVFC ? videoEl.requestVideoFrameCallback(cb) : requestAnimationFrame(cb);
+      },
+      cancel: function (id) {
+        if (id === null || id === undefined) return;
+        if (useVFC) videoEl.cancelVideoFrameCallback(id); else cancelAnimationFrame(id);
+      }
+    };
+  }
+
   /* ------------------------------------------------------------------ */
   /* タブ切り替え                                                        */
   /* ------------------------------------------------------------------ */
@@ -13003,9 +13248,9 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
         document.querySelectorAll('.tab-panel').forEach(function (p) { p.classList.remove('active'); });
         $(btn.dataset.target).classList.add('active');
         if (btn.dataset.target === 'panel-receive') {
-          // 受信タブに入った時は特に何もしない(カメラは明示的な開始ボタンで起動)
+          stopSendScan(); // 送信タブ側の要求QRスキャンが動いていれば止める
         } else {
-          stopCamera();
+          stopCamera(); // 受信タブ側のカメラが動いていれば止める
         }
       });
     });
@@ -13019,12 +13264,20 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     fileBytes: null,
     fileName: '',
     mimeType: '',
-    frames: [],       // Uint8Array[]  (index0 = メタフレーム, 以降 = データフレーム)
+    sessionId: null,
+    allFrames: [],    // ビルド時の完全なフレーム列(常にこれを保持し、再送信モードから復帰できるようにする)
+    frames: [],       // 現在再生中のフレーム列(通常時はallFramesと同じ、再送信モード中は欠損分のみ)
     ecLevel: 'M',
     idx: 0,
     playing: false,
     timer: null,
-    intervalMs: 333
+    intervalMs: 333,
+    scanStream: null, // 受信側の「要求QR」を読み取るためのカメラストリーム
+    scanRafId: null,
+    scanScheduler: null,
+    scanning: false,
+    pendingRequest: null,      // {requestSeq, pageCount, pages: Map<pageIndex, number[]>}
+    lastAppliedRequestSeq: -1
   };
 
   function fpsToMs(fps) {
@@ -13097,10 +13350,20 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       frames.push(P.buildDataFrame(sessionId, i, send.fileBytes.subarray(start, end)));
     }
 
+    stopSendScan(); // 新しいQR列を作り直すので、進行中の要求スキャンがあれば止める
+
+    send.sessionId = sessionId;
+    send.allFrames = frames;
     send.frames = frames;
     send.idx = 0;
+    send.pendingRequest = null;
+    send.lastAppliedRequestSeq = -1;
     $('send-jump-input').max = String(Math.max(0, frames.length - 2));
     $('send-jump-input').min = '0';
+    $('send-resend-panel').style.display = '';
+    $('send-scan-btn').disabled = false;
+    $('send-revert-btn').style.display = 'none';
+    $('send-scan-status').textContent = 'まだ要求QRは読み取っていません。';
 
     var totalFrames = frames.length;
     var estMs = totalFrames * send.intervalMs;
@@ -13122,10 +13385,16 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     var bytes = send.frames[send.idx];
     var canvas = $('send-qr-canvas');
     drawQrToCanvas(bytes, send.ecLevel, canvas);
-    var isMeta = send.idx === 0;
-    var dataFrameCount = send.frames.length - 1; // メタフレームを除いた実データフレーム数
-    $('send-frame-label').textContent =
-      isMeta ? 'メタ情報フレーム' : ('データフレーム ' + send.idx + ' / ' + dataFrameCount);
+    var parsed = P.parseFrame(bytes);
+    var dataFrameCount = send.frames.length - 1; // メタフレームを除いた実データフレーム数(現在の再生対象内)
+    if (parsed && parsed.type === 'meta') {
+      $('send-frame-label').textContent = 'メタ情報フレーム';
+    } else if (parsed && parsed.type === 'data') {
+      $('send-frame-label').textContent =
+        '元チャンク番号 ' + parsed.chunkIndex + ' ・ 再生位置 ' + send.idx + ' / ' + dataFrameCount;
+    } else {
+      $('send-frame-label').textContent = '-';
+    }
     $('send-frame-counter').textContent = (send.idx + 1) + ' / ' + send.frames.length;
     syncSeekUI();
   }
@@ -13260,6 +13529,252 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
         if (!isNaN(n)) jumpToDataFrameNumber(n);
       }
     });
+
+    $('send-scan-btn').addEventListener('click', startSendScan);
+    $('send-scan-stop-btn').addEventListener('click', stopSendScan);
+    $('send-revert-btn').addEventListener('click', revertToFullPlayback);
+  }
+
+  /* ---- 受信側からの「欠損チャンク要求QR」をカメラで読み取る ---- */
+
+  var sendScanCanvas = document.createElement('canvas');
+
+  /* ---- カメラ設定(自動/手動、解析画質、フレームレート) ---- */
+  /* 受信側カメラ・送信側の要求QRスキャン用カメラの両方で共通して使う設定。
+     「自動」ではこれまでどおりバランス重視の既定値を使い、「手動」では
+     ユーザーが選んだ画質プリセット・フレームレートを使う。 */
+  var RESOLUTION_PRESETS = {
+    low:    { label: '低(480p相当・高速)',       width: 640,  height: 480,  scanMaxDim: 480 },
+    medium: { label: '標準(720p相当)',            width: 1280, height: 720,  scanMaxDim: 640 },
+    high:   { label: '高精細(1080p相当)',         width: 1920, height: 1080, scanMaxDim: 960 },
+    ultra:  { label: '最高精細(1440p相当・低速)', width: 2560, height: 1440, scanMaxDim: 1280 }
+  };
+
+  var cameraSettings = {
+    mode: 'auto',            // 'auto' | 'manual'
+    resolutionKey: 'medium', // RESOLUTION_PRESETSのキー(手動時のみ使用)
+    frameRate: 30            // 手動時のみ使用
+  };
+
+  function getCameraConstraints() {
+    if (cameraSettings.mode === 'manual') {
+      var preset = RESOLUTION_PRESETS[cameraSettings.resolutionKey] || RESOLUTION_PRESETS.medium;
+      return {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: preset.width },
+        height: { ideal: preset.height },
+        frameRate: { ideal: cameraSettings.frameRate, max: cameraSettings.frameRate }
+      };
+    }
+    // 自動: バランス重視の既定値
+    return {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30, max: 30 }
+    };
+  }
+
+  function getScanMaxDim() {
+    if (cameraSettings.mode === 'manual') {
+      var preset = RESOLUTION_PRESETS[cameraSettings.resolutionKey] || RESOLUTION_PRESETS.medium;
+      return preset.scanMaxDim;
+    }
+    return 640; // 自動モードの既定値
+  }
+
+  // 受信タブ・送信タブ両方に置かれた設定UIを、現在のcameraSettingsに合わせて同期表示する
+  function syncCameraSettingsUI() {
+    ['recv', 'send'].forEach(function (prefix) {
+      var autoRadio = $(prefix + '-cam-mode-auto');
+      var manualRadio = $(prefix + '-cam-mode-manual');
+      if (!autoRadio || !manualRadio) return;
+      autoRadio.checked = cameraSettings.mode === 'auto';
+      manualRadio.checked = cameraSettings.mode === 'manual';
+      $(prefix + '-cam-resolution').value = cameraSettings.resolutionKey;
+      $(prefix + '-cam-fps').value = String(cameraSettings.frameRate);
+      $(prefix + '-cam-manual-fields').style.display = cameraSettings.mode === 'manual' ? '' : 'none';
+    });
+  }
+
+  // 設定変更時、既に起動中のカメラがあればすぐに再起動して新しい設定を反映する
+  function applyCameraSettingsChange() {
+    syncCameraSettingsUI();
+    if (recv.stream) { stopCamera(); startCamera(); }
+    if (send.scanStream) { stopSendScan(); startSendScan(); }
+  }
+
+  function initCameraSettingsUI() {
+    ['recv', 'send'].forEach(function (prefix) {
+      var autoRadio = $(prefix + '-cam-mode-auto');
+      var manualRadio = $(prefix + '-cam-mode-manual');
+      var resSelect = $(prefix + '-cam-resolution');
+      var fpsSelect = $(prefix + '-cam-fps');
+      function onChange() {
+        cameraSettings.mode = manualRadio.checked ? 'manual' : 'auto';
+        cameraSettings.resolutionKey = resSelect.value;
+        cameraSettings.frameRate = parseInt(fpsSelect.value, 10);
+        applyCameraSettingsChange();
+      }
+      autoRadio.addEventListener('change', onChange);
+      manualRadio.addEventListener('change', onChange);
+      resSelect.addEventListener('change', onChange);
+      fpsSelect.addEventListener('change', onChange);
+    });
+    syncCameraSettingsUI();
+  }
+
+  async function startSendScan() {
+    if (send.scanStream || !send.sessionId) return;
+    stopCamera(); // 受信タブのカメラと同時使用しないよう排他制御
+    try {
+      send.scanStream = await navigator.mediaDevices.getUserMedia({
+        video: getCameraConstraints(),
+        audio: false
+      });
+    } catch (err) {
+      $('send-scan-status').textContent = 'カメラを起動できませんでした: ' + err.message;
+      return;
+    }
+    var video = $('send-scan-video');
+    video.srcObject = send.scanStream;
+    await video.play();
+    send.scanning = true;
+    send.scanScheduler = createFrameScheduler(video);
+    $('send-scan-btn').disabled = true;
+    $('send-scan-stop-btn').disabled = false;
+    $('send-scan-status').textContent = '受信側が表示している要求QRコードを映してください...';
+    sendScanLoop();
+  }
+
+  function stopSendScan() {
+    send.scanning = false;
+    if (send.scanRafId !== null && send.scanScheduler) {
+      send.scanScheduler.cancel(send.scanRafId);
+      send.scanRafId = null;
+    }
+    send.scanScheduler = null;
+    if (send.scanStream) {
+      send.scanStream.getTracks().forEach(function (t) { t.stop(); });
+      send.scanStream = null;
+    }
+    var video = $('send-scan-video');
+    if (video) video.srcObject = null;
+    var startBtn = $('send-scan-btn'), stopBtn = $('send-scan-stop-btn');
+    if (startBtn) startBtn.disabled = !send.sessionId;
+    if (stopBtn) stopBtn.disabled = true;
+    var overlay = $('send-scan-overlay');
+    if (overlay) overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
+  }
+
+  function sendScanLoop() {
+    if (!send.scanning) return;
+    var video = $('send-scan-video');
+    if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth) {
+      var vw = video.videoWidth, vh = video.videoHeight;
+      var scale = Math.min(1, getScanMaxDim() / Math.max(vw, vh));
+      var w = Math.max(1, Math.round(vw * scale));
+      var h = Math.max(1, Math.round(vh * scale));
+      sendScanCanvas.width = w;
+      sendScanCanvas.height = h;
+      var ctx = sendScanCanvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(video, 0, 0, w, h);
+      var imgData;
+      try {
+        imgData = ctx.getImageData(0, 0, w, h);
+      } catch (e) {
+        send.scanRafId = send.scanScheduler.request(sendScanLoop);
+        return;
+      }
+      var code = window.jsQR(imgData.data, w, h, { inversionAttempts: 'dontInvert' });
+      drawSendScanOverlay(code, w, h);
+      if (code && code.binaryData && code.binaryData.length) {
+        handleScannedRequestBytes(new Uint8Array(code.binaryData));
+      }
+    }
+    send.scanRafId = send.scanScheduler.request(sendScanLoop);
+  }
+
+  function drawSendScanOverlay(code, srcW, srcH) {
+    var overlay = $('send-scan-overlay');
+    var video = $('send-scan-video');
+    var cw = video.clientWidth || srcW, ch = video.clientHeight || srcH;
+    if (overlay.width !== cw) overlay.width = cw;
+    if (overlay.height !== ch) overlay.height = ch;
+    var ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    if (!code) return;
+    var sx = cw / srcW, sy = ch / srcH;
+    var loc = code.location;
+    var pts = [loc.topLeftCorner, loc.topRightCorner, loc.bottomRightCorner, loc.bottomLeftCorner];
+    ctx.strokeStyle = '#e8a33d';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    pts.forEach(function (p, i) {
+      var x = p.x * sx, y = p.y * sy;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+  }
+
+  function handleScannedRequestBytes(bytes) {
+    var frame = P.parseFrame(bytes);
+    if (!frame || frame.type !== 'missing') return; // 欠損要求フレーム以外は無視
+    if (send.sessionId === null || frame.sessionId !== send.sessionId) return; // 別セッションの要求は無視
+    if (frame.requestSeq === send.lastAppliedRequestSeq) return; // 既に適用済みの要求
+
+    if (!send.pendingRequest || send.pendingRequest.requestSeq !== frame.requestSeq) {
+      send.pendingRequest = { requestSeq: frame.requestSeq, pageCount: frame.pageCount, pages: new Map() };
+    }
+    send.pendingRequest.pages.set(frame.pageIndex, frame.missingIndices);
+    $('send-scan-status').textContent =
+      '要求QR受信中: ' + send.pendingRequest.pages.size + ' / ' + send.pendingRequest.pageCount + ' ページ';
+
+    if (send.pendingRequest.pages.size === send.pendingRequest.pageCount) {
+      var all = [];
+      for (var p = 0; p < send.pendingRequest.pageCount; p++) {
+        all = all.concat(send.pendingRequest.pages.get(p) || []);
+      }
+      applyResend(all, frame.requestSeq);
+    }
+  }
+
+  // 欠損チャンクの番号リストだけを含む新しい再生列(メタフレーム+欠損分のみ)に切り替える
+  function applyResend(missingIndices, requestSeq) {
+    send.lastAppliedRequestSeq = requestSeq;
+    send.pendingRequest = null;
+
+    var newFrames = [send.allFrames[0]]; // メタフレームは常に含める(受信側が新規スキャン時にも識別できるように)
+    missingIndices.forEach(function (i) {
+      if (send.allFrames[1 + i]) newFrames.push(send.allFrames[1 + i]);
+    });
+
+    send.frames = newFrames;
+    send.idx = 0;
+    $('send-jump-input').max = String(Math.max(0, newFrames.length - 2));
+    renderCurrentFrame();
+
+    stopSendScan();
+    stopPlayback();
+    startPlayback();
+
+    $('send-scan-status').textContent =
+      '要求 #' + requestSeq + ' を適用しました。欠損 ' + missingIndices.length + ' 個のチャンクのみ再生中です。';
+    $('send-status').textContent =
+      '再送信モード: 欠損していた ' + missingIndices.length + ' 個のチャンクのみループ再生中(要求 #' + requestSeq + ')。';
+    $('send-revert-btn').style.display = '';
+  }
+
+  function revertToFullPlayback() {
+    if (!send.allFrames.length) return;
+    send.frames = send.allFrames.slice();
+    send.idx = 0;
+    $('send-jump-input').max = String(Math.max(0, send.frames.length - 2));
+    stopPlayback();
+    renderCurrentFrame();
+    $('send-status').textContent = '全フレームの再生に戻しました。';
+    $('send-revert-btn').style.display = 'none';
   }
 
   /* ------------------------------------------------------------------ */
@@ -13277,8 +13792,14 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     chunks: null,     // Map<index, Uint8Array>
     stream: null,
     rafId: null,
+    scanScheduler: null,
     scanning: false,
-    done: false
+    done: false,
+    loopCount: 0,          // 送信側のメタフレームを再度検出した回数(=1周した回数の目安)
+    lastFrameType: null,   // 直近に正しく認識したフレーム種別('meta' | 'data')。チャタリング防止に使う
+    requestSeq: 0,          // 欠損要求フレームの通し番号(送るたびにインクリメント)
+    requestPages: [],       // 直近に生成した要求QRのページ(Uint8Array[])
+    requestPageIdx: 0
   };
 
   function resetReceiveState() {
@@ -13291,17 +13812,26 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     recv.mime = '';
     recv.chunks = new Map();
     recv.done = false;
+    recv.loopCount = 0;
+    recv.lastFrameType = null;
+    recv.requestSeq = 0;
+    recv.requestPages = [];
+    recv.requestPageIdx = 0;
     $('recv-meta').style.display = 'none';
     $('recv-result').style.display = 'none';
     $('recv-progress-grid').innerHTML = '';
     $('recv-status').textContent = 'カメラを起動して、送信側のQRコードを映してください。';
+    hideLoopBanner();
+    hideRequestPanel();
+    updateRequestButtonState();
   }
 
   async function startCamera() {
     if (recv.stream) return;
+    stopSendScan(); // 送信タブ側の要求QRスキャンと同時使用しないよう排他制御
     try {
       recv.stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
+        video: getCameraConstraints(),
         audio: false
       });
     } catch (err) {
@@ -13313,6 +13843,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     video.srcObject = recv.stream;
     await video.play();
     recv.scanning = true;
+    recv.scanScheduler = createFrameScheduler(video);
     $('recv-start-btn').disabled = true;
     $('recv-stop-btn').disabled = false;
     scanLoop();
@@ -13320,7 +13851,11 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
 
   function stopCamera() {
     recv.scanning = false;
-    if (recv.rafId) { cancelAnimationFrame(recv.rafId); recv.rafId = null; }
+    if (recv.rafId !== null && recv.scanScheduler) {
+      recv.scanScheduler.cancel(recv.rafId);
+      recv.rafId = null;
+    }
+    recv.scanScheduler = null;
     if (recv.stream) {
       recv.stream.getTracks().forEach(function (t) { t.stop(); });
       recv.stream = null;
@@ -13340,9 +13875,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     if (!recv.scanning) return;
     var video = $('recv-video');
     if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth) {
-      var maxDim = 720;
       var vw = video.videoWidth, vh = video.videoHeight;
-      var scale = Math.min(1, maxDim / Math.max(vw, vh));
+      var scale = Math.min(1, getScanMaxDim() / Math.max(vw, vh));
       var w = Math.max(1, Math.round(vw * scale));
       var h = Math.max(1, Math.round(vh * scale));
       scanCanvas.width = w;
@@ -13353,7 +13887,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       try {
         imgData = ctx.getImageData(0, 0, w, h);
       } catch (e) {
-        recv.rafId = requestAnimationFrame(scanLoop);
+        recv.rafId = recv.scanScheduler.request(scanLoop);
         return;
       }
       var code = window.jsQR(imgData.data, w, h, { inversionAttempts: 'dontInvert' });
@@ -13362,7 +13896,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
         handleScannedBytes(new Uint8Array(code.binaryData));
       }
     }
-    recv.rafId = requestAnimationFrame(scanLoop);
+    recv.rafId = recv.scanScheduler.request(scanLoop);
   }
 
   function drawOverlay(code, srcW, srcH) {
@@ -13403,15 +13937,23 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
         recv.filename = frame.filename || 'received_file';
         recv.mime = frame.mime || 'application/octet-stream';
         recv.chunks = new Map();
+        recv.loopCount = 0;
         showMeta();
         buildProgressGrid();
         updateProgressUI();
+      } else if (recv.lastFrameType === 'data') {
+        // 同一セッションのメタフレームを、データフレームを挟んだ後に再度検出 = 送信側が1周した合図。
+        // (メタフレームが画面に表示され続けている間に何度も連続検出されるだけではここに来ない=チャタリング防止)
+        recv.loopCount++;
+        maybeShowLoopBanner();
       }
+      recv.lastFrameType = 'meta';
       return;
     }
 
     if (frame.type === 'data') {
       if (recv.sessionId === null || frame.sessionId !== recv.sessionId) return; // 別セッション or 未受信のメタ
+      recv.lastFrameType = 'data';
       if (frame.chunkIndex < 0 || frame.chunkIndex >= recv.totalChunks) return;
       if (!recv.chunks.has(frame.chunkIndex)) {
         recv.chunks.set(frame.chunkIndex, frame.payload);
@@ -13419,6 +13961,20 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
         if (recv.chunks.size === recv.totalChunks) finalizeReceive();
       }
     }
+  }
+
+  function maybeShowLoopBanner() {
+    if (recv.done) return;
+    var missing = recv.totalChunks - recv.chunks.size;
+    if (missing <= 0) { hideLoopBanner(); return; }
+    $('recv-loop-text').textContent =
+      '送信側が ' + recv.loopCount + ' 周しました。まだ ' + missing + ' 個のチャンクが未受信です。' +
+      '要求QRを表示して送信側に伝えると、欠損分だけをすぐに再送信してもらえます。';
+    $('recv-loop-banner').style.display = '';
+  }
+
+  function hideLoopBanner() {
+    $('recv-loop-banner').style.display = 'none';
   }
 
   function showMeta() {
@@ -13429,6 +13985,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       ' ・ 種類: ' + escapeHtml(recv.mime) +
       '<br>総チャンク数: ' + recv.totalChunks + ' ・ セッションID: ' + recv.sessionId;
     $('recv-status').textContent = 'メタ情報を受信しました。データフレームをスキャン中...';
+    updateRequestButtonState();
   }
 
   function buildProgressGrid() {
@@ -13458,10 +14015,20 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     $('recv-missing').textContent = missing.length
       ? ('未受信のチャンク番号(先頭30件): ' + missing.join(', '))
       : '';
+    updateRequestButtonState();
+  }
+
+  function updateRequestButtonState() {
+    var btn = $('recv-request-btn');
+    var hasMissing = recv.sessionId !== null && !recv.done && recv.chunks.size < recv.totalChunks;
+    btn.disabled = !hasMissing;
   }
 
   async function finalizeReceive() {
     recv.done = true;
+    hideLoopBanner();
+    hideRequestPanel();
+    updateRequestButtonState();
     $('recv-status').textContent = 'ファイル全体のハッシュを検証しています...';
     var parts = [];
     for (var i = 0; i < recv.totalChunks; i++) parts.push(recv.chunks.get(i));
@@ -13526,7 +14093,65 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     $('recv-start-btn').addEventListener('click', startCamera);
     $('recv-stop-btn').addEventListener('click', stopCamera);
     $('recv-reset-btn').addEventListener('click', resetReceiveState);
+    $('recv-request-btn').addEventListener('click', openMissingRequestPanel);
+    $('recv-loop-request-btn').addEventListener('click', openMissingRequestPanel);
+    $('recv-loop-dismiss-btn').addEventListener('click', hideLoopBanner);
+    $('recv-request-back-btn').addEventListener('click', closeMissingRequestPanel);
+    $('recv-request-prev-btn').addEventListener('click', function () {
+      if (recv.requestPageIdx > 0) { recv.requestPageIdx--; renderRequestPage(); }
+    });
+    $('recv-request-next-btn').addEventListener('click', function () {
+      if (recv.requestPageIdx < recv.requestPages.length - 1) { recv.requestPageIdx++; renderRequestPage(); }
+    });
     resetReceiveState();
+  }
+
+  // 現在の未受信チャンク番号一覧から「欠損チャンク要求QR」を組み立てて表示し、
+  // 送信側にスキャンしてもらえるようにする。カメラでのスキャンは一旦停止する
+  // (受信端末の画面を送信端末のカメラに見せる操作に切り替わるため)。
+  function openMissingRequestPanel() {
+    if (recv.sessionId === null || recv.done) return;
+    var missing = [];
+    for (var i = 0; i < recv.totalChunks; i++) if (!recv.chunks.has(i)) missing.push(i);
+    if (!missing.length) return;
+
+    recv.requestSeq = (recv.requestSeq + 1) & 0xff;
+    var ecLevel = 'M';
+    var version = 20; // 要求フレームは小さな管理データのため、送信側の設定とは独立した固定値でよい
+    var maxBytes = P.probeMaxBytes(window.qrcode, version, ecLevel);
+    recv.requestPages = P.buildMissingFramePages(recv.sessionId, recv.requestSeq, missing, maxBytes);
+    recv.requestPageIdx = 0;
+
+    hideLoopBanner();
+    stopCamera();
+    renderRequestPage();
+    $('recv-request-panel').style.display = '';
+    $('recv-status').textContent =
+      'この画面を送信側のカメラに映してください(欠損 ' + missing.length + ' 個・要求 #' + recv.requestSeq + ')。';
+  }
+
+  function renderRequestPage() {
+    var bytes = recv.requestPages[recv.requestPageIdx];
+    if (!bytes) return;
+    drawQrToCanvas(bytes, 'M', $('recv-request-canvas'));
+    var pageRow = $('recv-request-page-row');
+    if (recv.requestPages.length > 1) {
+      pageRow.style.display = '';
+      $('recv-request-page-label').textContent = (recv.requestPageIdx + 1) + ' / ' + recv.requestPages.length;
+      $('recv-request-prev-btn').disabled = recv.requestPageIdx === 0;
+      $('recv-request-next-btn').disabled = recv.requestPageIdx === recv.requestPages.length - 1;
+    } else {
+      pageRow.style.display = 'none';
+    }
+  }
+
+  function hideRequestPanel() {
+    $('recv-request-panel').style.display = 'none';
+  }
+
+  function closeMissingRequestPanel() {
+    hideRequestPanel();
+    if (!recv.done) startCamera(); // スキャンを再開する
   }
 
   /* ------------------------------------------------------------------ */
@@ -13537,6 +14162,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     initTabs();
     initSendUI();
     initReceiveUI();
+    initCameraSettingsUI();
   });
 
   // タブ切り替え時にカメラを止めるため公開
