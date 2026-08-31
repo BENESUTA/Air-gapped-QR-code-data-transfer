@@ -154,6 +154,15 @@
   .chunk-cell.received { background: var(--green); border-color: var(--green); }
   #recv-missing { font-family: var(--mono); font-size: 11.5px; color: var(--muted); line-height: 1.6; }
 
+  details.chunk-details { margin: 4px 0 10px; }
+  details.chunk-details summary {
+    cursor: pointer; font-size: 13px; color: var(--muted); padding: 6px 0;
+    list-style: revert;
+  }
+  details.chunk-details summary::marker { color: var(--muted); }
+  .chunk-summary-count { font-family: var(--mono); color: var(--text); }
+  details.chunk-details #recv-progress-grid { margin-top: 8px; }
+
   .result-box {
     border-radius: 10px; padding: 16px; margin-top: 14px; border: 1px solid var(--border);
   }
@@ -200,6 +209,14 @@
   .cam-manual-fields .field { flex: 1; margin-bottom: 0; }
   .cam-manual-fields label { font-size: 12px; }
   .cam-hint { font-size: 11.5px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+
+  .exposure-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .exposure-title { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
+  .exposure-row { margin-bottom: 12px; }
+  .exposure-row-label { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text); margin-bottom: 4px; }
+  .exposure-row-label .val { font-family: var(--mono); color: var(--muted); }
+  .exposure-row input[type="range"] { width: 100%; accent-color: var(--amber); }
+  .exposure-row input[type="range"]:disabled { opacity: 0.4; }
 
   footer.app-footer {
     text-align: center; color: var(--muted); font-size: 11.5px; margin-top: 22px; line-height: 1.8;
@@ -256,7 +273,7 @@
 
       <div class="field">
         <label for="send-fps">切り替え速度: <span id="send-fps-label">3 fps(約333ミリ秒/枚)</span></label>
-        <input type="range" id="send-fps" min="1" max="20" value="3" step="1">
+        <input type="range" id="send-fps" min="1" max="60" value="3" step="1">
       </div>
 
       <div class="btn-row">
@@ -347,6 +364,14 @@
           <div class="cam-hint">
             この設定は受信側・送信側のどちらのカメラにも共通で適用されます(受信タブの設定と連動します)。
           </div>
+
+          <div class="exposure-section">
+            <div class="exposure-title">露出設定(ISO・シャッター速度など)</div>
+            <div class="cam-hint" style="margin-top:0;">端末・ブラウザが対応している場合のみ、下に調整項目が表示されます。</div>
+            <div id="send-exposure-body" style="margin-top:8px;">
+              <div class="cam-hint">カメラを起動すると、対応している場合に設定項目が表示されます。</div>
+            </div>
+          </div>
         </div>
       </details>
 
@@ -436,6 +461,14 @@
             画質を上げるほど遠くのQRコードや高精細なQRコードを読み取りやすくなりますが、1フレームあたりの解析に時間がかかり速度が落ちます。
             設定はカメラの次回起動時、または起動中であれば即座に再適用されます(送信側・受信側どちらのカメラにも共通で適用されます)。
           </div>
+
+          <div class="exposure-section">
+            <div class="exposure-title">露出設定(ISO・シャッター速度など)</div>
+            <div class="cam-hint" style="margin-top:0;">端末・ブラウザが対応している場合のみ、下に調整項目が表示されます。</div>
+            <div id="recv-exposure-body" style="margin-top:8px;">
+              <div class="cam-hint">カメラを起動すると、対応している場合に設定項目が表示されます。</div>
+            </div>
+          </div>
         </div>
       </details>
 
@@ -472,8 +505,11 @@
         </div>
       </div>
 
-      <div id="recv-progress-grid"></div>
-      <div id="recv-missing"></div>
+      <details class="chunk-details" id="recv-chunk-details" open>
+        <summary>チャンク受信状況 <span id="recv-chunk-summary-count" class="chunk-summary-count"></span></summary>
+        <div id="recv-progress-grid"></div>
+        <div id="recv-missing"></div>
+      </details>
 
       <div id="recv-result" class="result-box" style="display:none;"></div>
     </div>
@@ -13273,11 +13309,13 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     timer: null,
     intervalMs: 333,
     scanStream: null, // 受信側の「要求QR」を読み取るためのカメラストリーム
+    scanVideoTrack: null,
     scanRafId: null,
     scanScheduler: null,
     scanning: false,
     pendingRequest: null,      // {requestSeq, pageCount, pages: Map<pageIndex, number[]>}
-    lastAppliedRequestSeq: -1
+    lastAppliedRequestSeq: -1,
+    statsStatic: null          // ビルド時に決まる統計情報(セッションID・誤り訂正・容量など)
   };
 
   function fpsToMs(fps) {
@@ -13358,6 +13396,13 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     send.idx = 0;
     send.pendingRequest = null;
     send.lastAppliedRequestSeq = -1;
+    send.statsStatic = {
+      sessionId: sessionId,
+      ecLevel: ecLevel,
+      maxBytes: maxBytes,
+      chunkSize: chunkSize,
+      totalChunksOriginal: totalChunks
+    };
     $('send-jump-input').max = String(Math.max(0, frames.length - 2));
     $('send-jump-input').min = '0';
     $('send-resend-panel').style.display = '';
@@ -13365,19 +13410,33 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     $('send-revert-btn').style.display = 'none';
     $('send-scan-status').textContent = 'まだ要求QRは読み取っていません。';
 
-    var totalFrames = frames.length;
-    var estMs = totalFrames * send.intervalMs;
-    $('send-stats').innerHTML =
-      'セッションID: ' + sessionId +
-      ' ・ 誤り訂正: ' + pickErrorCorrectionLabel(ecLevel) +
-      ' ・ 1フレームあたり最大 ' + maxBytes + ' バイト (8bitバイトモード)' +
-      '<br>チャンクサイズ: ' + chunkSize + ' バイト ・ 総フレーム数: ' + totalFrames +
-      ' (メタ1 + データ' + totalChunks + ')' +
-      '<br>1周にかかる目安時間: 約 ' + formatMs(estMs);
-
+    updateSendStats();
     renderCurrentFrame();
     $('send-controls').style.display = '';
     $('send-status').textContent = '準備完了。再生ボタンでQRコードの表示を開始してください。';
+  }
+
+  // 「1周にかかる目安時間」等の統計表示を、現在の再生対象フレーム数(全体 or 再送信サブセット)と
+  // 現在のfps設定に基づいて再計算する。fps変更時・要求QR適用時・全体再生への復帰時に呼び出す。
+  function updateSendStats() {
+    var s = send.statsStatic;
+    if (!s) { $('send-stats').innerHTML = ''; return; }
+    var totalFrames = send.frames.length;
+    var dataFramesInPlay = totalFrames - 1;
+    var isResend = dataFramesInPlay !== s.totalChunksOriginal;
+    var estMs = totalFrames * send.intervalMs;
+    var fpsNow = $('send-fps').value;
+
+    var html =
+      'セッションID: ' + s.sessionId +
+      ' ・ 誤り訂正: ' + pickErrorCorrectionLabel(s.ecLevel) +
+      ' ・ 1フレームあたり最大 ' + s.maxBytes + ' バイト (8bitバイトモード)' +
+      '<br>チャンクサイズ: ' + s.chunkSize + ' バイト ・ ' +
+      (isResend
+        ? ('再送信対象フレーム数: ' + totalFrames + ' (メタ1 + 欠損' + dataFramesInPlay + ' / 全' + s.totalChunksOriginal + ')')
+        : ('総フレーム数: ' + totalFrames + ' (メタ1 + データ' + dataFramesInPlay + ')')) +
+      '<br>1周にかかる目安時間: 約 ' + formatMs(estMs) + '(' + fpsNow + ' fps換算)';
+    $('send-stats').innerHTML = html;
   }
 
   function renderCurrentFrame() {
@@ -13502,6 +13561,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       var fps = parseInt($('send-fps').value, 10);
       send.intervalMs = fpsToMs(fps);
       $('send-fps-label').textContent = fps + ' fps(約' + send.intervalMs + 'ミリ秒/枚)';
+      updateSendStats();
       if (send.playing) { stopPlayback(); startPlayback(); }
     });
     $('send-version-cap').addEventListener('input', function () {
@@ -13624,6 +13684,163 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     syncCameraSettingsUI();
   }
 
+  /* ---- 露出設定(ISO・シャッター速度など、対応時のみ) ---- */
+  /* 端末・ブラウザによって対応状況や調整可能範囲が大きく異なるため、
+     カメラ起動後に MediaStreamTrack.getCapabilities() で実際の対応状況を取得し、
+     対応している項目だけを動的にUI構築する。非対応環境では何も表示しない。 */
+
+  function debounce(fn, wait) {
+    var t = null;
+    return function () {
+      var args = arguments, ctx = this;
+      clearTimeout(t);
+      t = setTimeout(function () { fn.apply(ctx, args); }, wait);
+    };
+  }
+
+  function applyTrackConstraint(track, obj) {
+    if (!track || !track.applyConstraints) return;
+    track.applyConstraints({ advanced: [obj] }).catch(function () { /* 非対応の場合は無視する */ });
+  }
+
+  // ラベル・現在値表示付きのレンジスライダー行を1つ作る
+  function exposureRangeRow(labelText, cap, initial, onInput) {
+    var row = el('div', 'exposure-row');
+    var labelRow = el('div', 'exposure-row-label');
+    var labelSpan = el('span', null, labelText);
+    var valueSpan = el('span', 'val', String(Math.round(initial * 100) / 100));
+    labelRow.appendChild(labelSpan);
+    labelRow.appendChild(valueSpan);
+    row.appendChild(labelRow);
+
+    var input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(cap.min);
+    input.max = String(cap.max);
+    input.step = String(cap.step || ((cap.max - cap.min) / 100) || 1);
+    input.value = String(initial);
+
+    var apply = debounce(function () { onInput(parseFloat(input.value)); }, 120);
+    input.addEventListener('input', function () {
+      valueSpan.textContent = String(Math.round(parseFloat(input.value) * 100) / 100);
+      apply();
+    });
+
+    row.appendChild(input);
+    return row;
+  }
+
+  function buildExposureUI(prefix, track) {
+    var body = $(prefix + '-exposure-body');
+    if (!body) return;
+    body.innerHTML = '';
+
+    if (!track || typeof track.getCapabilities !== 'function') {
+      body.appendChild(el('div', 'cam-hint', 'このブラウザは露出設定の取得に対応していません。'));
+      return;
+    }
+
+    var caps = {}, settings = {};
+    try { caps = track.getCapabilities() || {}; } catch (e) { caps = {}; }
+    try { settings = track.getSettings ? (track.getSettings() || {}) : {}; } catch (e) { settings = {}; }
+
+    var any = false;
+
+    // 露出モード(自動/手動) - 両方に対応している場合のみ切り替えUIを出す
+    if (Array.isArray(caps.exposureMode) && caps.exposureMode.length > 1) {
+      any = true;
+      var modeRow = el('div', 'exposure-row');
+      modeRow.appendChild(el('div', 'exposure-row-label', '露出モード'));
+      var group = document.createElement('div');
+      group.className = 'mode-row';
+      ['continuous', 'manual'].forEach(function (m) {
+        if (caps.exposureMode.indexOf(m) === -1) return;
+        var label = document.createElement('label');
+        label.className = 'radio-label';
+        var radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = prefix + '-exposure-mode-' + Date.now(); // 再構築のたびに一意化してグループ衝突を避ける
+        radio.checked = (settings.exposureMode || caps.exposureMode[0]) === m;
+        radio.addEventListener('change', function () {
+          applyTrackConstraint(track, { exposureMode: m });
+          // 手動へ切り替えた際、シャッター速度/ISOスライダーの有効・無効を更新するため再構築する
+          setTimeout(function () { buildExposureUI(prefix, track); }, 200);
+        });
+        label.appendChild(radio);
+        label.appendChild(document.createTextNode(m === 'manual' ? '手動' : '自動'));
+        group.appendChild(label);
+      });
+      modeRow.appendChild(group);
+      body.appendChild(modeRow);
+    }
+
+    var currentMode = settings.exposureMode ||
+      (Array.isArray(caps.exposureMode) ? caps.exposureMode[0] : 'continuous');
+    var manualActive = currentMode === 'manual';
+
+    if (caps.exposureCompensation && typeof caps.exposureCompensation.min === 'number') {
+      any = true;
+      var initEc = typeof settings.exposureCompensation === 'number'
+        ? settings.exposureCompensation
+        : (caps.exposureCompensation.min + caps.exposureCompensation.max) / 2;
+      body.appendChild(exposureRangeRow('露出補正(EV)', caps.exposureCompensation, initEc, function (v) {
+        applyTrackConstraint(track, { exposureCompensation: v });
+      }));
+    }
+
+    if (caps.exposureTime && typeof caps.exposureTime.min === 'number') {
+      any = true;
+      var initEt = typeof settings.exposureTime === 'number' ? settings.exposureTime : caps.exposureTime.min;
+      var etRow = exposureRangeRow('シャッター速度(露出時間)', caps.exposureTime, initEt, function (v) {
+        applyTrackConstraint(track, { exposureTime: v });
+      });
+      if (!manualActive) {
+        etRow.querySelector('input').disabled = true;
+        etRow.appendChild(el('div', 'cam-hint', '手動露出モードでのみ調整できます。'));
+      }
+      body.appendChild(etRow);
+    }
+
+    if (caps.iso && typeof caps.iso.min === 'number') {
+      any = true;
+      var initIso = typeof settings.iso === 'number' ? settings.iso : caps.iso.min;
+      var isoRow = exposureRangeRow('ISO感度', caps.iso, initIso, function (v) {
+        applyTrackConstraint(track, { iso: v });
+      });
+      if (!manualActive) {
+        isoRow.querySelector('input').disabled = true;
+        isoRow.appendChild(el('div', 'cam-hint', '手動露出モードでのみ調整できます。'));
+      }
+      body.appendChild(isoRow);
+    }
+
+    if (caps.torch === true) {
+      any = true;
+      var torchRow = el('div', 'exposure-row');
+      var torchLabel = document.createElement('label');
+      torchLabel.className = 'radio-label';
+      var torchCheckbox = document.createElement('input');
+      torchCheckbox.type = 'checkbox';
+      torchCheckbox.checked = !!settings.torch;
+      torchCheckbox.addEventListener('change', function () {
+        applyTrackConstraint(track, { torch: torchCheckbox.checked });
+      });
+      torchLabel.appendChild(torchCheckbox);
+      torchLabel.appendChild(document.createTextNode('ライト(トーチ)を点灯 - 暗い場所での読み取りに'));
+      torchRow.appendChild(torchLabel);
+      body.appendChild(torchRow);
+    }
+
+    if (!any) {
+      body.appendChild(el('div', 'cam-hint', 'このカメラ・ブラウザでは露出設定(ISO等)に対応していません。'));
+    }
+  }
+
+  function resetExposureUI(prefix) {
+    var body = $(prefix + '-exposure-body');
+    if (body) body.innerHTML = '<div class="cam-hint">カメラを起動すると、対応している場合に設定項目が表示されます。</div>';
+  }
+
   async function startSendScan() {
     if (send.scanStream || !send.sessionId) return;
     stopCamera(); // 受信タブのカメラと同時使用しないよう排他制御
@@ -13641,6 +13858,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     await video.play();
     send.scanning = true;
     send.scanScheduler = createFrameScheduler(video);
+    send.scanVideoTrack = send.scanStream.getVideoTracks()[0] || null;
+    buildExposureUI('send', send.scanVideoTrack);
     $('send-scan-btn').disabled = true;
     $('send-scan-stop-btn').disabled = false;
     $('send-scan-status').textContent = '受信側が表示している要求QRコードを映してください...';
@@ -13654,6 +13873,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       send.scanRafId = null;
     }
     send.scanScheduler = null;
+    send.scanVideoTrack = null;
+    resetExposureUI('send');
     if (send.scanStream) {
       send.scanStream.getTracks().forEach(function (t) { t.stop(); });
       send.scanStream = null;
@@ -13753,16 +13974,17 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     send.frames = newFrames;
     send.idx = 0;
     $('send-jump-input').max = String(Math.max(0, newFrames.length - 2));
+    updateSendStats();
     renderCurrentFrame();
 
     stopSendScan();
-    stopPlayback();
-    startPlayback();
+    stopPlayback(); // 慌ただしくならないよう、要求QR読み取り直後は自動再生せず一時停止状態にしておく
 
     $('send-scan-status').textContent =
-      '要求 #' + requestSeq + ' を適用しました。欠損 ' + missingIndices.length + ' 個のチャンクのみ再生中です。';
+      '要求 #' + requestSeq + ' を適用しました。欠損 ' + missingIndices.length + ' 個のチャンクのみに絞り込みました。';
     $('send-status').textContent =
-      '再送信モード: 欠損していた ' + missingIndices.length + ' 個のチャンクのみループ再生中(要求 #' + requestSeq + ')。';
+      '再送信モード: 欠損していた ' + missingIndices.length + ' 個のチャンクに絞り込みました(要求 #' + requestSeq + ')。' +
+      '再生ボタンを押すと開始します。';
     $('send-revert-btn').style.display = '';
   }
 
@@ -13771,6 +13993,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     send.frames = send.allFrames.slice();
     send.idx = 0;
     $('send-jump-input').max = String(Math.max(0, send.frames.length - 2));
+    updateSendStats();
     stopPlayback();
     renderCurrentFrame();
     $('send-status').textContent = '全フレームの再生に戻しました。';
@@ -13791,6 +14014,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     mime: '',
     chunks: null,     // Map<index, Uint8Array>
     stream: null,
+    videoTrack: null,
     rafId: null,
     scanScheduler: null,
     scanning: false,
@@ -13820,6 +14044,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     $('recv-meta').style.display = 'none';
     $('recv-result').style.display = 'none';
     $('recv-progress-grid').innerHTML = '';
+    $('recv-chunk-details').open = true;
+    $('recv-chunk-summary-count').textContent = '';
     $('recv-status').textContent = 'カメラを起動して、送信側のQRコードを映してください。';
     hideLoopBanner();
     hideRequestPanel();
@@ -13844,6 +14070,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     await video.play();
     recv.scanning = true;
     recv.scanScheduler = createFrameScheduler(video);
+    recv.videoTrack = recv.stream.getVideoTracks()[0] || null;
+    buildExposureUI('recv', recv.videoTrack);
     $('recv-start-btn').disabled = true;
     $('recv-stop-btn').disabled = false;
     scanLoop();
@@ -13856,6 +14084,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       recv.rafId = null;
     }
     recv.scanScheduler = null;
+    recv.videoTrack = null;
+    resetExposureUI('recv');
     if (recv.stream) {
       recv.stream.getTracks().forEach(function (t) { t.stop(); });
       recv.stream = null;
@@ -13985,6 +14215,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       ' ・ 種類: ' + escapeHtml(recv.mime) +
       '<br>総チャンク数: ' + recv.totalChunks + ' ・ セッションID: ' + recv.sessionId;
     $('recv-status').textContent = 'メタ情報を受信しました。データフレームをスキャン中...';
+    $('recv-chunk-details').open = true; // 新しい転送を開始したので受信状況を展開表示する
     updateRequestButtonState();
   }
 
@@ -14003,7 +14234,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     var received = recv.chunks.size;
     var total = recv.totalChunks || 0;
     $('recv-status').textContent =
-      '受信中: ' + received + ' / ' + total + ' チャンク';
+      '受信済: ' + received + ' / ' + total + ' チャンク';
+    $('recv-chunk-summary-count').textContent = '(' + received + ' / ' + total + ')';
     for (var i = 0; i < total; i++) {
       var cell = $('chunk-cell-' + i);
       if (cell) cell.classList.toggle('received', recv.chunks.has(i));
@@ -14029,6 +14261,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     hideLoopBanner();
     hideRequestPanel();
     updateRequestButtonState();
+    $('recv-chunk-details').open = false; // 完了したのでダウンロードボタンが埋もれないよう自動的に折りたたむ
     $('recv-status').textContent = 'ファイル全体のハッシュを検証しています...';
     var parts = [];
     for (var i = 0; i < recv.totalChunks; i++) parts.push(recv.chunks.get(i));
