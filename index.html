@@ -96,6 +96,9 @@
   #send-file-info, #send-status, #recv-status {
     font-size: 13px; color: var(--muted); margin-top: 6px; line-height: 1.6;
   }
+  .throughput-line {
+    font-family: var(--mono); font-size: 12.5px; color: var(--green); margin-top: 2px; min-height: 1.2em;
+  }
   #send-stats { font-size: 12.5px; color: var(--muted); font-family: var(--mono); line-height: 1.9; margin-top: 10px; }
 
   /* --- QR 表示エリア(ビューファインダー風) --- */
@@ -473,6 +476,7 @@
       </details>
 
       <div id="recv-status">カメラを起動して、送信側のQRコードを映してください。</div>
+      <div id="recv-throughput" class="throughput-line"></div>
 
       <div id="recv-loop-banner" class="loop-banner" style="display:none;">
         <span id="recv-loop-text"></span>
@@ -13245,6 +13249,50 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     return m + ' 分 ' + rs + ' 秒';
   }
 
+  // 値を有効数字sig桁の文字列にする(指数表記は使わず、通常の固定小数点表記のまま桁数を丸める)
+  function toSignificantFixed(value, sig) {
+    if (!isFinite(value) || value === 0) return (0).toFixed(Math.max(0, sig - 1));
+    var sign = value < 0 ? '-' : '';
+    var v = Math.abs(value);
+    var exponent = Math.floor(Math.log10(v));
+    var decimals = sig - 1 - exponent;
+    if (decimals >= 0) {
+      var factor = Math.pow(10, decimals);
+      var rounded = Math.round(v * factor) / factor;
+      // 丸めで桁が繰り上がった場合(例: 9.996 -> 10.0)に小数桁数を再計算する
+      var newExp = rounded > 0 ? Math.floor(Math.log10(rounded)) : exponent;
+      if (newExp !== exponent) {
+        decimals = Math.max(0, sig - 1 - newExp);
+        factor = Math.pow(10, decimals);
+        rounded = Math.round(v * factor) / factor;
+      }
+      return sign + rounded.toFixed(decimals);
+    }
+    var factor2 = Math.pow(10, -decimals);
+    var rounded2 = Math.round(v / factor2) * factor2;
+    return sign + String(rounded2);
+  }
+
+  // 直近1秒間に受信したデータ量から通信速度を計算する(kbps = キロビット/秒)
+  function computeThroughputKbps() {
+    var now = performance.now();
+    var windowMs = 1000;
+    while (recv.throughputSamples.length && now - recv.throughputSamples[0].t > windowMs) {
+      recv.throughputSamples.shift();
+    }
+    var bytes = 0;
+    for (var i = 0; i < recv.throughputSamples.length; i++) bytes += recv.throughputSamples[i].bytes;
+    return (bytes * 8) / windowMs; // バイト*8=ビット、windowMs(=1000ms)で割ると ビット/ミリ秒 = キロビット/秒 と数値上一致する
+  }
+
+  function updateThroughputDisplay() {
+    var elDiv = $('recv-throughput');
+    if (!elDiv) return;
+    if (recv.sessionId === null) { elDiv.textContent = ''; return; }
+    var kbps = computeThroughputKbps();
+    elDiv.textContent = '通信速度(直近1秒): 約 ' + toSignificantFixed(kbps, 3) + ' kbps';
+  }
+
   function el(tag, cls, text) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -13699,8 +13747,10 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
   }
 
   function applyTrackConstraint(track, obj) {
-    if (!track || !track.applyConstraints) return;
-    track.applyConstraints({ advanced: [obj] }).catch(function () { /* 非対応の場合は無視する */ });
+    if (!track || !track.applyConstraints) return Promise.resolve(false);
+    return track.applyConstraints({ advanced: [obj] })
+      .then(function () { return true; })
+      .catch(function () { return false; /* 非対応の場合は無視する */ });
   }
 
   // ラベル・現在値表示付きのレンジスライダー行を1つ作る
@@ -13753,6 +13803,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       modeRow.appendChild(el('div', 'exposure-row-label', '露出モード'));
       var group = document.createElement('div');
       group.className = 'mode-row';
+      var modeStatus = el('div', 'cam-hint', '');
       ['continuous', 'manual'].forEach(function (m) {
         if (caps.exposureMode.indexOf(m) === -1) return;
         var label = document.createElement('label');
@@ -13762,15 +13813,28 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
         radio.name = prefix + '-exposure-mode-' + Date.now(); // 再構築のたびに一意化してグループ衝突を避ける
         radio.checked = (settings.exposureMode || caps.exposureMode[0]) === m;
         radio.addEventListener('change', function () {
-          applyTrackConstraint(track, { exposureMode: m });
-          // 手動へ切り替えた際、シャッター速度/ISOスライダーの有効・無効を更新するため再構築する
-          setTimeout(function () { buildExposureUI(prefix, track); }, 200);
+          // 適用完了(Promise解決)を待ってからUIを再構築する。固定時間待つと、
+          // 実際の適用より先に古い設定を読んでしまい「手動にしてもすぐ自動に戻る」ように見えるバグになるため。
+          Array.prototype.forEach.call(group.querySelectorAll('input[type="radio"]'), function (r) { r.disabled = true; });
+          modeStatus.textContent = '適用中...';
+          applyTrackConstraint(track, { exposureMode: m }).then(function (ok) {
+            var actual = {};
+            try { actual = track.getSettings ? (track.getSettings() || {}) : {}; } catch (e) { actual = {}; }
+            if (ok && actual.exposureMode !== m) {
+              // Promise自体は成功しても、この端末・カメラドライバーが実際には切り替えを反映しない場合がある
+              modeStatus.textContent = 'この端末では「' + (m === 'manual' ? '手動' : '自動') + '」への切り替えが反映されませんでした。';
+              setTimeout(function () { buildExposureUI(prefix, track); }, 1500);
+            } else {
+              buildExposureUI(prefix, track);
+            }
+          });
         });
         label.appendChild(radio);
         label.appendChild(document.createTextNode(m === 'manual' ? '手動' : '自動'));
         group.appendChild(label);
       });
       modeRow.appendChild(group);
+      modeRow.appendChild(modeStatus);
       body.appendChild(modeRow);
     }
 
@@ -14021,6 +14085,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     done: false,
     loopCount: 0,          // 送信側のメタフレームを再度検出した回数(=1周した回数の目安)
     lastFrameType: null,   // 直近に正しく認識したフレーム種別('meta' | 'data')。チャタリング防止に使う
+    throughputSamples: [],  // {t, bytes}[] 直近の受信チャンクのタイムスタンプとサイズ(通信速度計算用)
     requestSeq: 0,          // 欠損要求フレームの通し番号(送るたびにインクリメント)
     requestPages: [],       // 直近に生成した要求QRのページ(Uint8Array[])
     requestPageIdx: 0
@@ -14038,6 +14103,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     recv.done = false;
     recv.loopCount = 0;
     recv.lastFrameType = null;
+    recv.throughputSamples = [];
     recv.requestSeq = 0;
     recv.requestPages = [];
     recv.requestPageIdx = 0;
@@ -14046,6 +14112,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     $('recv-progress-grid').innerHTML = '';
     $('recv-chunk-details').open = true;
     $('recv-chunk-summary-count').textContent = '';
+    $('recv-throughput').textContent = '';
     $('recv-status').textContent = 'カメラを起動して、送信側のQRコードを映してください。';
     hideLoopBanner();
     hideRequestPanel();
@@ -14126,6 +14193,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
         handleScannedBytes(new Uint8Array(code.binaryData));
       }
     }
+    updateThroughputDisplay();
     recv.rafId = recv.scanScheduler.request(scanLoop);
   }
 
@@ -14168,6 +14236,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
         recv.mime = frame.mime || 'application/octet-stream';
         recv.chunks = new Map();
         recv.loopCount = 0;
+        recv.throughputSamples = [];
         showMeta();
         buildProgressGrid();
         updateProgressUI();
@@ -14187,6 +14256,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       if (frame.chunkIndex < 0 || frame.chunkIndex >= recv.totalChunks) return;
       if (!recv.chunks.has(frame.chunkIndex)) {
         recv.chunks.set(frame.chunkIndex, frame.payload);
+        recv.throughputSamples.push({ t: performance.now(), bytes: frame.payload.length });
         updateProgressUI();
         if (recv.chunks.size === recv.totalChunks) finalizeReceive();
       }
