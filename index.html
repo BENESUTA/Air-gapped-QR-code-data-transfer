@@ -271,7 +271,7 @@
 
       <div class="field">
         <label for="send-version-cap">QRコードの精細さの上限: <span id="send-version-cap-label">バージョン 20 以下</span></label>
-        <input type="range" id="send-version-cap" min="4" max="40" value="20" step="1">
+        <input type="range" id="send-version-cap" min="1" max="40" value="20" step="1">
       </div>
 
       <div class="field">
@@ -13401,15 +13401,22 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     var mimeBytes = P.utf8Bytes(send.mimeType).slice(0, 255);
     var overhead = P.dataFrameOverhead();
 
-    // 指定した最大QRバージョン以下で収まる、1フレームあたりの最大バイト数を実際の
+    // 指定した最大QRバージョンで収まる、1フレームあたりの最大バイト数を実際の
     // qrcode-generator ライブラリで探索する(ハードコードされた容量表は使わない)。
-    var version = versionCap;
-    var maxBytes = P.probeMaxBytes(window.qrcode, version, ecLevel);
+    // これはユーザーが指定したバージョン上限をそのまま尊重し、データフレームのチャンクサイズを決める。
+    var maxBytes = P.probeMaxBytes(window.qrcode, versionCap, ecLevel);
+
+    // メタフレームは常に typeNumber=0(自動選択)でレンダリングされるため、
+    // バージョン上限とは無関係にバージョン40まで使って収まるかどうかだけを確認する
+    // (ここでバージョンを底上げしてしまうと、その値がデータフレーム側のチャンクサイズにも
+    //  波及し、ユーザーが指定した低いバージョン上限が事実上無視されてしまうバグになるため、
+    //  データフレーム側の計算には一切影響させない)。
     var metaOverhead = P.metaFrameOverhead(filenameBytes.length, mimeBytes.length);
-    // メタフレームがそのバージョンに収まらない場合は自動でバージョンを上げる(稀なケース)
-    while (metaOverhead > maxBytes && version < 40) {
-      version += 1;
-      maxBytes = P.probeMaxBytes(window.qrcode, version, ecLevel);
+    var maxBytesForMetaAt40 = P.probeMaxBytes(window.qrcode, 40, ecLevel);
+    if (metaOverhead > maxBytesForMetaAt40) {
+      $('send-status').textContent =
+        'エラー: ファイル名またはファイル種類の文字列が長すぎて、メタ情報がQRコード1枚(バージョン40)に収まりません。ファイル名を短くしてください。';
+      return;
     }
 
     var chunkSize = maxBytes - overhead;
