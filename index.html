@@ -13363,7 +13363,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     scanning: false,
     pendingRequest: null,      // {requestSeq, pageCount, pages: Map<pageIndex, number[]>}
     lastAppliedRequestSeq: -1,
-    statsStatic: null          // ビルド時に決まる統計情報(セッションID・誤り訂正・容量など)
+    statsStatic: null,        // ビルド時に決まる統計情報(セッションID・誤り訂正・容量など)
+    framesHaveMeta: true      // 現在のsend.framesの先頭にメタフレームを含むか(再送信モードでは含めない)
   };
 
   function fpsToMs(fps) {
@@ -13448,6 +13449,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     send.sessionId = sessionId;
     send.allFrames = frames;
     send.frames = frames;
+    send.framesHaveMeta = true;
     send.idx = 0;
     send.pendingRequest = null;
     send.lastAppliedRequestSeq = -1;
@@ -13458,7 +13460,6 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       chunkSize: chunkSize,
       totalChunksOriginal: totalChunks
     };
-    $('send-jump-input').max = String(Math.max(0, frames.length - 2));
     $('send-jump-input').min = '0';
     $('send-resend-panel').style.display = '';
     $('send-scan-btn').disabled = false;
@@ -13477,8 +13478,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     var s = send.statsStatic;
     if (!s) { $('send-stats').innerHTML = ''; return; }
     var totalFrames = send.frames.length;
-    var dataFramesInPlay = totalFrames - 1;
-    var isResend = dataFramesInPlay !== s.totalChunksOriginal;
+    var dataFramesInPlay = send.framesHaveMeta ? totalFrames - 1 : totalFrames;
+    var isResend = !send.framesHaveMeta;
     var estMs = totalFrames * send.intervalMs;
     var fpsNow = $('send-fps').value;
 
@@ -13488,7 +13489,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       ' ・ 1フレームあたり最大 ' + s.maxBytes + ' バイト (8bitバイトモード)' +
       '<br>チャンクサイズ: ' + s.chunkSize + ' バイト ・ ' +
       (isResend
-        ? ('再送信対象フレーム数: ' + totalFrames + ' (メタ1 + 欠損' + dataFramesInPlay + ' / 全' + s.totalChunksOriginal + ')')
+        ? ('再送信対象フレーム数: ' + totalFrames + ' (メタ無し・欠損' + dataFramesInPlay + ' / 全' + s.totalChunksOriginal + ')')
         : ('総フレーム数: ' + totalFrames + ' (メタ1 + データ' + dataFramesInPlay + ')')) +
       '<br>1周にかかる目安時間: 約 ' + formatMs(estMs) + '(' + fpsNow + ' fps換算)';
     $('send-stats').innerHTML = html;
@@ -13500,7 +13501,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     var canvas = $('send-qr-canvas');
     drawQrToCanvas(bytes, send.ecLevel, canvas);
     var parsed = P.parseFrame(bytes);
-    var dataFrameCount = send.frames.length - 1; // メタフレームを除いた実データフレーム数(現在の再生対象内)
+    var dataFrameCount = send.framesHaveMeta ? send.frames.length - 1 : send.frames.length; // 現在の再生対象内のデータフレーム件数
     if (parsed && parsed.type === 'meta') {
       $('send-frame-label').textContent = 'メタ情報フレーム';
     } else if (parsed && parsed.type === 'data') {
@@ -13524,9 +13525,9 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
 
     var jumpInput = $('send-jump-input');
     if (document.activeElement !== jumpInput) {
-      jumpInput.value = String(send.idx === 0 ? 0 : send.idx); // 0=メタフレームは番号入力上は「0」=先頭データフレームとして表示
+      jumpInput.value = String(send.idx);
     }
-    jumpInput.max = String(Math.max(0, send.frames.length - 2));
+    jumpInput.max = String(Math.max(0, send.frames.length - 1));
   }
 
   function jumpToFrameIndex(rawIdx) {
@@ -13537,12 +13538,12 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     renderCurrentFrame();
   }
 
-  // データフレーム番号(1始まりの「データフレーム N」表記、0はメタフレームを指す)で移動
+  // 現在の再生対象フレーム列における位置(0始まり)で移動する。
+  // メタフレームを含む通常モードでは 0=メタフレーム、1以降=データフレームとなり、
+  // 再送信モード(メタフレームなし)では 0以降がそのままデータフレームとなる。
   function jumpToDataFrameNumber(n) {
     if (!send.frames.length) return;
-    var maxData = send.frames.length - 1; // データフレームの最大番号
-    var clamped = Math.max(0, Math.min(maxData, Math.round(n)));
-    jumpToFrameIndex(clamped); // frames配列上は index=0がメタ、index=Nがデータフレーム番号Nなのでそのまま一致
+    jumpToFrameIndex(n); // jumpToFrameIndexが範囲外の値を自動的にクランプする
   }
 
   function drawQrToCanvas(bytes, ecLevel, canvas) {
@@ -14032,19 +14033,22 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     }
   }
 
-  // 欠損チャンクの番号リストだけを含む新しい再生列(メタフレーム+欠損分のみ)に切り替える
+  // 欠損チャンクの番号リストだけを含む新しい再生列(メタフレームは含めない)に切り替える
   function applyResend(missingIndices, requestSeq) {
     send.lastAppliedRequestSeq = requestSeq;
     send.pendingRequest = null;
 
-    var newFrames = [send.allFrames[0]]; // メタフレームは常に含める(受信側が新規スキャン時にも識別できるように)
+    // 要求QRを送ってこられる時点で、受信側は既にメタフレームを取得済み(でなければ
+    // セッションID・総チャンク数・欠損番号が分からず要求QR自体を作れない)。そのため
+    // 再送信では欠損チャンクのみを再生し、メタフレームは含めない(表示時間の節約)。
+    var newFrames = [];
     missingIndices.forEach(function (i) {
       if (send.allFrames[1 + i]) newFrames.push(send.allFrames[1 + i]);
     });
 
     send.frames = newFrames;
+    send.framesHaveMeta = false;
     send.idx = 0;
-    $('send-jump-input').max = String(Math.max(0, newFrames.length - 2));
     updateSendStats();
     renderCurrentFrame();
 
@@ -14062,8 +14066,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
   function revertToFullPlayback() {
     if (!send.allFrames.length) return;
     send.frames = send.allFrames.slice();
+    send.framesHaveMeta = true;
     send.idx = 0;
-    $('send-jump-input').max = String(Math.max(0, send.frames.length - 2));
     updateSendStats();
     stopPlayback();
     renderCurrentFrame();
