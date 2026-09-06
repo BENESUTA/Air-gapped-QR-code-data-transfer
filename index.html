@@ -13482,6 +13482,9 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     var isResend = !send.framesHaveMeta;
     var estMs = totalFrames * send.intervalMs;
     var fpsNow = $('send-fps').value;
+    // チャンクサイズ(1フレームあたりの実データ量)と表示間隔から想定通信速度を算出する。
+    // bytes*8(ビット) / intervalMs(ミリ秒) は数値上そのまま kbps(キロビット/秒) と一致する。
+    var kbps = (s.chunkSize * 8) / send.intervalMs;
 
     var html =
       'セッションID: ' + s.sessionId +
@@ -13491,7 +13494,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       (isResend
         ? ('再送信対象フレーム数: ' + totalFrames + ' (メタ無し・欠損' + dataFramesInPlay + ' / 全' + s.totalChunksOriginal + ')')
         : ('総フレーム数: ' + totalFrames + ' (メタ1 + データ' + dataFramesInPlay + ')')) +
-      '<br>1周にかかる目安時間: 約 ' + formatMs(estMs) + '(' + fpsNow + ' fps換算)';
+      '<br>1周にかかる目安時間: 約 ' + formatMs(estMs) + '(' + fpsNow + ' fps換算)' +
+      '<br>想定通信速度: 約 ' + toSignificantFixed(kbps, 3) + ' kbps(チャンクサイズ × 表示速度換算)';
     $('send-stats').innerHTML = html;
   }
 
