@@ -13218,7 +13218,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
 
 </script>
 <script>
-/* ===== QR Transfer App - 送信/受信UIのアプリケーションロジック ===== */
+/* ===== QR Transfer App - 送信/受信UIのアプリケーションロジック(ロックオン方式スキャン最適化含む) ===== */
 /* QR オフラインファイル転送アプリ - アプリケーションロジック
  * 依存: window.qrcode (qrcode-generator), window.jsQR (jsQR), window.QRTransferProtocol (protocol.js)
  * すべてクライアントサイドのみで完結し、ネットワーク通信は一切行わない。
@@ -13319,6 +13319,83 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     };
   }
 
+  /* ---- ロックオン方式によるスキャン領域の最適化 ----
+     一度QRコードの位置を検出したら、次フレーム以降はその周辺の小さな領域だけを高速スキャンする。
+     jsQRの処理コスト(特にファインダーパターン探索)はおおよそ走査面積に比例するため、
+     高バージョン(高密度)のQRコードや高解像度設定で特に効果が大きい。見失った場合は自動的に
+     フルフレームのスキャンに戻る。読み取り内容そのものには一切影響しない、純粋な速度最適化。 */
+  var ROI_MARGIN_SCALE = 2.2; // 前回のバウンディングボックスをこの倍率に拡大した範囲だけを次回スキャンする
+  var ROI_MIN_SIZE = 60;      // クロップ領域の最小辺長(px) - QRが小さく映っている場合の下限
+  var ROI_LOST_LIMIT = 8;     // この回数だけ連続でロック範囲内に見つからなければ、諦めてフルスキャンに戻す
+
+  function boundingBoxFromLocation(loc) {
+    var xs = [loc.topLeftCorner.x, loc.topRightCorner.x, loc.bottomLeftCorner.x, loc.bottomRightCorner.x];
+    var ys = [loc.topLeftCorner.y, loc.topRightCorner.y, loc.bottomLeftCorner.y, loc.bottomRightCorner.y];
+    var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+    var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+
+  function expandBox(box, canvasW, canvasH) {
+    var cx = box.x + box.w / 2, cy = box.y + box.h / 2;
+    var w = Math.min(canvasW, Math.max(box.w * ROI_MARGIN_SCALE, ROI_MIN_SIZE));
+    var h = Math.min(canvasH, Math.max(box.h * ROI_MARGIN_SCALE, ROI_MIN_SIZE));
+    var x = Math.max(0, Math.min(canvasW - w, cx - w / 2));
+    var y = Math.max(0, Math.min(canvasH - h, cy - h / 2));
+    return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+  }
+
+  // jsQRの検出結果(クロップ画像内のローカル座標)を、元のフルフレーム座標系に補正する
+  function remapCodeLocation(code, box) {
+    var loc = code.location;
+    ['topLeftCorner', 'topRightCorner', 'bottomLeftCorner', 'bottomRightCorner',
+      'topLeftFinderPattern', 'topRightFinderPattern', 'bottomLeftFinderPattern'].forEach(function (key) {
+      var p = loc[key];
+      if (p) { p.x += box.x; p.y += box.y; }
+    });
+    if (loc.bottomRightAlignmentPattern) {
+      loc.bottomRightAlignmentPattern.x += box.x;
+      loc.bottomRightAlignmentPattern.y += box.y;
+    }
+    return code;
+  }
+
+  // ロックオン方式でのフレーム解析。state(recvまたはsendオブジェクト)に roiBox/roiMissCount を持たせて使う。
+  // fullCanvas/fullCtx は呼び出し側で毎フレーム描画済みのフルフレーム、w/hはそのサイズ。
+  // cropCanvas/cropCtx はロック中のクロップ描画専用に使い回す小さなキャンバス。
+  function scanFrameWithROI(fullCanvas, fullCtx, w, h, state, cropCanvas, cropCtx) {
+    if (state.roiBox) {
+      var box = expandBox(state.roiBox, w, h);
+      if (cropCanvas.width !== box.w) cropCanvas.width = box.w;
+      if (cropCanvas.height !== box.h) cropCanvas.height = box.h;
+      cropCtx.drawImage(fullCanvas, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
+      var cropData = null;
+      try { cropData = cropCtx.getImageData(0, 0, box.w, box.h); } catch (e) { /* 無視してフルスキャンにフォールバック */ }
+      var code = cropData ? window.jsQR(cropData.data, box.w, box.h, { inversionAttempts: 'dontInvert' }) : null;
+      if (code) {
+        remapCodeLocation(code, box);
+        state.roiBox = boundingBoxFromLocation(code.location);
+        state.roiMissCount = 0;
+        return code;
+      }
+      state.roiMissCount++;
+      if (state.roiMissCount <= ROI_LOST_LIMIT) {
+        return null; // まだロック維持を試みる猶予期間。このフレームはフルスキャンせず様子見する(無駄な二重スキャンを避ける)
+      }
+      state.roiBox = null; // ロックを諦める
+    }
+
+    // ロックなし(初回、または見失った場合): フルフレームをスキャンする
+    var fullData;
+    try { fullData = fullCtx.getImageData(0, 0, w, h); } catch (e) { return null; }
+    var fullCode = window.jsQR(fullData.data, w, h, { inversionAttempts: 'dontInvert' });
+    if (fullCode) {
+      state.roiBox = boundingBoxFromLocation(fullCode.location);
+      state.roiMissCount = 0;
+    }
+    return fullCode;
+  }
+
   /* ------------------------------------------------------------------ */
   /* タブ切り替え                                                        */
   /* ------------------------------------------------------------------ */
@@ -13361,6 +13438,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     scanRafId: null,
     scanScheduler: null,
     scanning: false,
+    roiBox: null,       // ロックオン方式スキャン用: 直近の検出位置(送信スキャン用)
+    roiMissCount: 0,
     pendingRequest: null,      // {requestSeq, pageCount, pages: Map<pageIndex, number[]>}
     lastAppliedRequestSeq: -1,
     statsStatic: null,        // ビルド時に決まる統計情報(セッションID・誤り訂正・容量など)
@@ -13658,6 +13737,9 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
   /* ---- 受信側からの「欠損チャンク要求QR」をカメラで読み取る ---- */
 
   var sendScanCanvas = document.createElement('canvas');
+  var sendScanCtx = sendScanCanvas.getContext('2d', { willReadFrequently: true });
+  var sendScanCropCanvas = document.createElement('canvas');
+  var sendScanCropCtx = sendScanCropCanvas.getContext('2d', { willReadFrequently: true });
 
   /* ---- カメラ設定(自動/手動、解析画質、フレームレート) ---- */
   /* 受信側カメラ・送信側の要求QRスキャン用カメラの両方で共通して使う設定。
@@ -13920,6 +14002,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
   async function startSendScan() {
     if (send.scanStream || !send.sessionId) return;
     stopCamera(); // 受信タブのカメラと同時使用しないよう排他制御
+    send.roiBox = null;
+    send.roiMissCount = 0;
     try {
       send.scanStream = await navigator.mediaDevices.getUserMedia({
         video: getCameraConstraints(),
@@ -13972,18 +14056,10 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       var scale = Math.min(1, getScanMaxDim() / Math.max(vw, vh));
       var w = Math.max(1, Math.round(vw * scale));
       var h = Math.max(1, Math.round(vh * scale));
-      sendScanCanvas.width = w;
-      sendScanCanvas.height = h;
-      var ctx = sendScanCanvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(video, 0, 0, w, h);
-      var imgData;
-      try {
-        imgData = ctx.getImageData(0, 0, w, h);
-      } catch (e) {
-        send.scanRafId = send.scanScheduler.request(sendScanLoop);
-        return;
-      }
-      var code = window.jsQR(imgData.data, w, h, { inversionAttempts: 'dontInvert' });
+      if (sendScanCanvas.width !== w) sendScanCanvas.width = w;
+      if (sendScanCanvas.height !== h) sendScanCanvas.height = h;
+      sendScanCtx.drawImage(video, 0, 0, w, h);
+      var code = scanFrameWithROI(sendScanCanvas, sendScanCtx, w, h, send, sendScanCropCanvas, sendScanCropCtx);
       drawSendScanOverlay(code, w, h);
       if (code && code.binaryData && code.binaryData.length) {
         handleScannedRequestBytes(new Uint8Array(code.binaryData));
@@ -14097,6 +14173,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     rafId: null,
     scanScheduler: null,
     scanning: false,
+    roiBox: null,       // ロックオン方式スキャン用: 直近の検出位置(受信スキャン用)
+    roiMissCount: 0,
     done: false,
     loopCount: 0,          // 送信側のメタフレームを再度検出した回数(=1周した回数の目安)
     lastFrameType: null,   // 直近に正しく認識したフレーム種別('meta' | 'data')。チャタリング防止に使う
@@ -14137,6 +14215,8 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
   async function startCamera() {
     if (recv.stream) return;
     stopSendScan(); // 送信タブ側の要求QRスキャンと同時使用しないよう排他制御
+    recv.roiBox = null;
+    recv.roiMissCount = 0;
     try {
       recv.stream = await navigator.mediaDevices.getUserMedia({
         video: getCameraConstraints(),
@@ -14182,6 +14262,9 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
   }
 
   var scanCanvas = document.createElement('canvas');
+  var scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
+  var scanCropCanvas = document.createElement('canvas');
+  var scanCropCtx = scanCropCanvas.getContext('2d', { willReadFrequently: true });
 
   function scanLoop() {
     if (!recv.scanning) return;
@@ -14191,18 +14274,10 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       var scale = Math.min(1, getScanMaxDim() / Math.max(vw, vh));
       var w = Math.max(1, Math.round(vw * scale));
       var h = Math.max(1, Math.round(vh * scale));
-      scanCanvas.width = w;
-      scanCanvas.height = h;
-      var ctx = scanCanvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(video, 0, 0, w, h);
-      var imgData;
-      try {
-        imgData = ctx.getImageData(0, 0, w, h);
-      } catch (e) {
-        recv.rafId = recv.scanScheduler.request(scanLoop);
-        return;
-      }
-      var code = window.jsQR(imgData.data, w, h, { inversionAttempts: 'dontInvert' });
+      if (scanCanvas.width !== w) scanCanvas.width = w;
+      if (scanCanvas.height !== h) scanCanvas.height = h;
+      scanCtx.drawImage(video, 0, 0, w, h);
+      var code = scanFrameWithROI(scanCanvas, scanCtx, w, h, recv, scanCropCanvas, scanCropCtx);
       drawOverlay(code, w, h);
       if (code && code.binaryData && code.binaryData.length) {
         handleScannedBytes(new Uint8Array(code.binaryData));
