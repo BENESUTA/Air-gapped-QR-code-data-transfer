@@ -332,8 +332,14 @@
       </p>
 
       <details class="cam-settings">
-        <summary>⚙ カメラ設定(解析画質・フレームレート)</summary>
+        <summary>⚙ カメラ設定(使用カメラ・解析画質・フレームレート)</summary>
         <div class="cam-settings-body">
+          <div class="field">
+            <label for="send-camera-select">使用するカメラ</label>
+            <select id="send-camera-select">
+              <option value="">自動選択(背面カメラ優先)</option>
+            </select>
+          </div>
           <div class="mode-row">
             <label class="radio-label">
               <input type="radio" name="send-cam-mode" id="send-cam-mode-auto" checked> 自動設定(推奨)
@@ -369,7 +375,7 @@
           </div>
 
           <div class="exposure-section">
-            <div class="exposure-title">露出設定(ISO・シャッター速度など)</div>
+            <div class="exposure-title">露出・フォーカス設定(ISO・シャッター速度・ピント調整など)</div>
             <div class="cam-hint" style="margin-top:0;">端末・ブラウザが対応している場合のみ、下に調整項目が表示されます。</div>
             <div id="send-exposure-body" style="margin-top:8px;">
               <div class="cam-hint">カメラを起動すると、対応している場合に設定項目が表示されます。</div>
@@ -390,6 +396,7 @@
       <div id="send-scan-status" style="font-size:13px; color:var(--muted); text-align:center;">
         まだ要求QRは読み取っていません。
       </div>
+      <div id="send-camera-info" class="cam-hint" style="text-align:center;"></div>
 
       <div class="btn-row" style="justify-content:center; margin-top:12px;">
         <button class="btn" id="send-revert-btn" style="display:none;">全フレームの再生に戻す</button>
@@ -428,8 +435,14 @@
       </div>
 
       <details class="cam-settings">
-        <summary>⚙ カメラ設定(解析画質・フレームレート)</summary>
+        <summary>⚙ カメラ設定(使用カメラ・解析画質・フレームレート)</summary>
         <div class="cam-settings-body">
+          <div class="field">
+            <label for="recv-camera-select">使用するカメラ</label>
+            <select id="recv-camera-select">
+              <option value="">自動選択(背面カメラ優先)</option>
+            </select>
+          </div>
           <div class="mode-row">
             <label class="radio-label">
               <input type="radio" name="recv-cam-mode" id="recv-cam-mode-auto" checked> 自動設定(推奨)
@@ -466,7 +479,7 @@
           </div>
 
           <div class="exposure-section">
-            <div class="exposure-title">露出設定(ISO・シャッター速度など)</div>
+            <div class="exposure-title">露出・フォーカス設定(ISO・シャッター速度・ピント調整など)</div>
             <div class="cam-hint" style="margin-top:0;">端末・ブラウザが対応している場合のみ、下に調整項目が表示されます。</div>
             <div id="recv-exposure-body" style="margin-top:8px;">
               <div class="cam-hint">カメラを起動すると、対応している場合に設定項目が表示されます。</div>
@@ -476,6 +489,7 @@
       </details>
 
       <div id="recv-status">カメラを起動して、送信側のQRコードを映してください。</div>
+      <div id="recv-camera-info" class="cam-hint"></div>
       <div id="recv-throughput" class="throughput-line"></div>
 
       <div id="recv-loop-banner" class="loop-banner" style="display:none;">
@@ -13218,7 +13232,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
 
 </script>
 <script>
-/* ===== QR Transfer App - 送信/受信UIのアプリケーションロジック(ロックオン方式スキャン最適化含む) ===== */
+/* ===== QR Transfer App - 送信/受信UIのアプリケーションロジック ===== */
 /* QR オフラインファイル転送アプリ - アプリケーションロジック
  * 依存: window.qrcode (qrcode-generator), window.jsQR (jsQR), window.QRTransferProtocol (protocol.js)
  * すべてクライアントサイドのみで完結し、ネットワーク通信は一切行わない。
@@ -13629,28 +13643,73 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     jumpToFrameIndex(n); // jumpToFrameIndexが範囲外の値を自動的にクランプする
   }
 
-  function drawQrToCanvas(bytes, ecLevel, canvas) {
+  // QRコードを描画する際の基準サイズ(内部解像度)。canvas.widthを基準にすると、フレームごとに
+  // モジュール数(QRバージョン)が変わるたびに前回描画結果を引きずって基準がズレていき、
+  // 表示が徐々に小さく/粗くなる不具合になるため、常にこの固定値を基準にする。
+  // devicePixelRatioを考慮して高精細ディスプレイでも滲まないようにする(上限は負荷を抑えるためのキャップ)。
+  function getQrRenderTargetPx() {
+    var dpr = Math.min(3, window.devicePixelRatio || 1);
+    return Math.round(900 * dpr);
+  }
+
+  // QRエンコード結果(モジュール配置)のキャッシュ。同じフレームのUint8Arrayをキーにする
+  // WeakMap なので、send.allFramesが新しく作り直された(=古いフレームが参照されなくなった)際に
+  // 自動的にガベージコレクションされ、手動でのキャッシュ無効化が不要。
+  // 高バージョンのQRコードはReed-Solomon計算やマスクパターン探索(8通り試す)のコストが大きく、
+  // これまでは同じフレームがループ再生で再表示されるたびに毎回再エンコードしていたため、
+  // バージョンが大きいほど設定した表示速度(fps)に対して実際の切り替わりが遅れる原因になっていた。
+  // 一度エンコードした結果を再利用することで、2周目以降はこのコストがほぼゼロになる。
+  var qrEncodeCache = new WeakMap();
+
+  function getEncodedQr(bytes, ecLevel) {
+    var cached = qrEncodeCache.get(bytes);
+    if (cached && cached.ecLevel === ecLevel) return cached;
     var qr = window.qrcode(0, ecLevel); // typeNumber=0 で必要最小バージョンを自動選択
     var binStr = P.bytesToBinaryString(bytes);
     qr.addData(binStr, 'Byte'); // 8bitバイトモードを明示的に強制
     qr.make();
     var count = qr.getModuleCount();
+    var moduleBits = new Uint8Array(count * count);
+    for (var r = 0; r < count; r++) {
+      for (var c = 0; c < count; c++) {
+        moduleBits[r * count + c] = qr.isDark(r, c) ? 1 : 0;
+      }
+    }
+    var result = { count: count, moduleBits: moduleBits, ecLevel: ecLevel };
+    qrEncodeCache.set(bytes, result);
+    return result;
+  }
+
+  function drawQrToCanvas(bytes, ecLevel, canvas) {
+    var encoded = getEncodedQr(bytes, ecLevel);
+    var count = encoded.count;
+    var moduleBits = encoded.moduleBits;
     var margin = 4; // クワイエットゾーン(モジュール単位)
-    var target = canvas.width; // 正方形canvas前提
+    var target = getQrRenderTargetPx(); // 常に固定基準(直前の描画結果に依存しない)
     var scale = Math.max(1, Math.floor(target / (count + margin * 2)));
     var size = (count + margin * 2) * scale;
     canvas.width = canvas.height = size;
     var ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, size, size);
-    ctx.fillStyle = '#000000';
+
+    // fillRectを1モジュールずつ積み重ねるより、ImageDataへ直接書き込んで一括転送する方が高速。
+    var imgData = ctx.createImageData(size, size);
+    var data = imgData.data;
+    data.fill(255); // R,G,B,Aすべて255 = 不透明の白で初期化
     for (var r = 0; r < count; r++) {
       for (var c = 0; c < count; c++) {
-        if (qr.isDark(r, c)) {
-          ctx.fillRect((c + margin) * scale, (r + margin) * scale, scale, scale);
+        if (!moduleBits[r * count + c]) continue;
+        var px0 = (c + margin) * scale;
+        var py0 = (r + margin) * scale;
+        for (var dy = 0; dy < scale; dy++) {
+          var rowOffset = ((py0 + dy) * size + px0) * 4;
+          for (var dx = 0; dx < scale; dx++) {
+            var idx = rowOffset + dx * 4;
+            data[idx] = 0; data[idx + 1] = 0; data[idx + 2] = 0; data[idx + 3] = 255;
+          }
         }
       }
     }
+    ctx.putImageData(imgData, 0, 0);
   }
 
   function playbackStep() {
@@ -13755,26 +13814,36 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
   var cameraSettings = {
     mode: 'auto',            // 'auto' | 'manual'
     resolutionKey: 'medium', // RESOLUTION_PRESETSのキー(手動時のみ使用)
-    frameRate: 30            // 手動時のみ使用
+    frameRate: 30,           // 手動時のみ使用
+    deviceId: ''             // '' = 自動選択(facingMode任せ)。それ以外は明示的なdeviceIdを使う
   };
 
   function getCameraConstraints() {
+    var base;
     if (cameraSettings.mode === 'manual') {
       var preset = RESOLUTION_PRESETS[cameraSettings.resolutionKey] || RESOLUTION_PRESETS.medium;
-      return {
-        facingMode: { ideal: 'environment' },
+      base = {
         width: { ideal: preset.width },
         height: { ideal: preset.height },
         frameRate: { ideal: cameraSettings.frameRate, max: cameraSettings.frameRate }
       };
+    } else {
+      // 自動: バランス重視の既定値
+      base = {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, max: 30 }
+      };
     }
-    // 自動: バランス重視の既定値
-    return {
-      facingMode: { ideal: 'environment' },
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-      frameRate: { ideal: 30, max: 30 }
-    };
+    // 特定のカメラが選択されている場合はそれを優先し、そうでなければ背面カメラをヒントとして使う。
+    // facingMode はあくまで「ヒント」であり、機種によっては意図しないカメラが選ばれることがあるため、
+    // 明示的にカメラを選べるようにしている。
+    if (cameraSettings.deviceId) {
+      base.deviceId = { exact: cameraSettings.deviceId };
+    } else {
+      base.facingMode = { ideal: 'environment' };
+    }
+    return base;
   }
 
   function getScanMaxDim() {
@@ -13796,6 +13865,44 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       $(prefix + '-cam-resolution').value = cameraSettings.resolutionKey;
       $(prefix + '-cam-fps').value = String(cameraSettings.frameRate);
       $(prefix + '-cam-manual-fields').style.display = cameraSettings.mode === 'manual' ? '' : 'none';
+      var camSelect = $(prefix + '-camera-select');
+      if (camSelect && camSelect.value !== cameraSettings.deviceId) {
+        // 候補にまだ無いdeviceIdの場合は反映しない(refreshCameraDeviceList側で選択肢が揃ってから合わせる)
+        var hasOption = Array.prototype.some.call(camSelect.options, function (o) { return o.value === cameraSettings.deviceId; });
+        if (hasOption) camSelect.value = cameraSettings.deviceId;
+      }
+    });
+  }
+
+  // 利用可能なカメラの一覧を取得し、送受信両方のカメラ選択欄に反映する。
+  // ラベル(機種名)は一度カメラの使用許可を得るまで空文字になる仕様のため、
+  // 許可前は「カメラ1」「カメラ2」のような仮の名前で表示し、許可後の再呼び出しで実名に更新する。
+  async function refreshCameraDeviceList() {
+    var devices;
+    try {
+      devices = await navigator.mediaDevices.enumerateDevices();
+    } catch (e) {
+      return;
+    }
+    var cams = devices.filter(function (d) { return d.kind === 'videoinput'; });
+    ['recv', 'send'].forEach(function (prefix) {
+      var sel = $(prefix + '-camera-select');
+      if (!sel) return;
+      var prevValue = sel.value;
+      sel.innerHTML = '';
+      var autoOpt = document.createElement('option');
+      autoOpt.value = '';
+      autoOpt.textContent = '自動選択(背面カメラ優先)';
+      sel.appendChild(autoOpt);
+      cams.forEach(function (cam, i) {
+        var opt = document.createElement('option');
+        opt.value = cam.deviceId;
+        opt.textContent = cam.label || ('カメラ ' + (i + 1));
+        sel.appendChild(opt);
+      });
+      var target = cameraSettings.deviceId || prevValue || '';
+      var hasOption = Array.prototype.some.call(sel.options, function (o) { return o.value === target; });
+      sel.value = hasOption ? target : '';
     });
   }
 
@@ -13812,6 +13919,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       var manualRadio = $(prefix + '-cam-mode-manual');
       var resSelect = $(prefix + '-cam-resolution');
       var fpsSelect = $(prefix + '-cam-fps');
+      var camSelect = $(prefix + '-camera-select');
       function onChange() {
         cameraSettings.mode = manualRadio.checked ? 'manual' : 'auto';
         cameraSettings.resolutionKey = resSelect.value;
@@ -13822,8 +13930,13 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       manualRadio.addEventListener('change', onChange);
       resSelect.addEventListener('change', onChange);
       fpsSelect.addEventListener('change', onChange);
+      camSelect.addEventListener('change', function () {
+        cameraSettings.deviceId = camSelect.value;
+        applyCameraSettingsChange();
+      });
     });
     syncCameraSettingsUI();
+    refreshCameraDeviceList(); // 許可前でも台数だけは分かる場合がある(ラベルは後で実名になる)
   }
 
   /* ---- 露出設定(ISO・シャッター速度など、対応時のみ) ---- */
@@ -13989,8 +14102,58 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       body.appendChild(torchRow);
     }
 
+    // --- フォーカス設定(対応時のみ) ---
+    // 露出設定と全く同じ仕組み(getCapabilities/applyConstraints)で実装している。
+    // 注意: iOS上のブラウザ(Safari・iOS版Chromeも含め全てWebKitベース)は
+    // focusMode/focusDistanceを一切公開しないため、iOS端末では常に非対応と表示される
+    // (Apple公式フォーラムでも明言されている既知の制約)。Android Chrome等の対応環境では機能する。
+    if (Array.isArray(caps.focusMode) && caps.focusMode.length > 1) {
+      any = true;
+      var focusModeRow = el('div', 'exposure-row');
+      focusModeRow.appendChild(el('div', 'exposure-row-label', 'フォーカスモード'));
+      var focusGroup = document.createElement('div');
+      focusGroup.className = 'mode-row';
+      var focusModeLabels = { continuous: '自動(連続)', manual: '手動', 'single-shot': '自動(1回)' };
+      caps.focusMode.forEach(function (m) {
+        var label = document.createElement('label');
+        label.className = 'radio-label';
+        var radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = prefix + '-focus-mode-' + Date.now();
+        radio.checked = (settings.focusMode || caps.focusMode[0]) === m;
+        radio.addEventListener('change', function () {
+          Array.prototype.forEach.call(focusGroup.querySelectorAll('input[type="radio"]'), function (r) { r.disabled = true; });
+          applyTrackConstraint(track, { focusMode: m }).then(function () {
+            buildExposureUI(prefix, track);
+          });
+        });
+        label.appendChild(radio);
+        label.appendChild(document.createTextNode(focusModeLabels[m] || m));
+        focusGroup.appendChild(label);
+      });
+      focusModeRow.appendChild(focusGroup);
+      body.appendChild(focusModeRow);
+    }
+
+    var currentFocusMode = settings.focusMode ||
+      (Array.isArray(caps.focusMode) ? caps.focusMode[0] : 'continuous');
+    var focusManualActive = currentFocusMode === 'manual';
+
+    if (caps.focusDistance && typeof caps.focusDistance.min === 'number') {
+      any = true;
+      var initFocus = typeof settings.focusDistance === 'number' ? settings.focusDistance : caps.focusDistance.min;
+      var focusRow = exposureRangeRow('フォーカス距離', caps.focusDistance, initFocus, function (v) {
+        applyTrackConstraint(track, { focusDistance: v });
+      });
+      if (!focusManualActive) {
+        focusRow.querySelector('input').disabled = true;
+        focusRow.appendChild(el('div', 'cam-hint', '手動フォーカスモードでのみ調整できます(値が小さいほど近距離にピントが合います)。'));
+      }
+      body.appendChild(focusRow);
+    }
+
     if (!any) {
-      body.appendChild(el('div', 'cam-hint', 'このカメラ・ブラウザでは露出設定(ISO等)に対応していません。'));
+      body.appendChild(el('div', 'cam-hint', 'このカメラ・ブラウザでは露出・フォーカス設定に対応していません(iOS端末では仕様上、常に非対応です)。'));
     }
   }
 
@@ -14023,6 +14186,10 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     $('send-scan-btn').disabled = true;
     $('send-scan-stop-btn').disabled = false;
     $('send-scan-status').textContent = '受信側が表示している要求QRコードを映してください...';
+    $('send-camera-info').textContent =
+      '実際のカメラ解像度: ' + video.videoWidth + ' × ' + video.videoHeight + 'px' +
+      (send.scanVideoTrack && send.scanVideoTrack.label ? ' (' + send.scanVideoTrack.label + ')' : '');
+    refreshCameraDeviceList(); // 許可後はラベル(機種名)が取得できるようになるため一覧を更新する
     sendScanLoop();
   }
 
@@ -14035,6 +14202,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     send.scanScheduler = null;
     send.scanVideoTrack = null;
     resetExposureUI('send');
+    $('send-camera-info').textContent = '';
     if (send.scanStream) {
       send.scanStream.getTracks().forEach(function (t) { t.stop(); });
       send.scanStream = null;
@@ -14236,6 +14404,10 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     buildExposureUI('recv', recv.videoTrack);
     $('recv-start-btn').disabled = true;
     $('recv-stop-btn').disabled = false;
+    $('recv-camera-info').textContent =
+      '実際のカメラ解像度: ' + video.videoWidth + ' × ' + video.videoHeight + 'px' +
+      (recv.videoTrack && recv.videoTrack.label ? ' (' + recv.videoTrack.label + ')' : '');
+    refreshCameraDeviceList(); // 許可後はラベル(機種名)が取得できるようになるため一覧を更新する
     scanLoop();
   }
 
@@ -14248,6 +14420,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     recv.scanScheduler = null;
     recv.videoTrack = null;
     resetExposureUI('recv');
+    $('recv-camera-info').textContent = '';
     if (recv.stream) {
       recv.stream.getTracks().forEach(function (t) { t.stop(); });
       recv.stream = null;
